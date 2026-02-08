@@ -1,0 +1,81 @@
+```mermaid
+erDiagram
+    USER {
+        int id PK
+        string email
+        string hashed_password
+        string full_name
+        boolean is_active
+        datetime created_at
+        int institution_id FK
+        string status
+    }
+    ROLE {
+        int id PK
+        string name
+        string description
+        boolean is_system
+        boolean is_active
+    }
+    INSTITUTION {
+        int id PK
+        string name
+        string slug
+        string type
+    }
+    ROLE_ASSIGNMENT {
+        int user_id PK FK
+        int role_id PK FK
+        int institution_id FK
+        datetime assigned_at
+        datetime expires_at
+    }
+
+    COURSE {
+        uuid course_id PK
+        string course_name
+        text description
+    }
+    SUBJECT {
+        uuid subject_id PK
+        uuid course_id FK
+        string subject_name
+        int semester
+    }
+    SYLLABUS {
+        uuid syllabus_id PK
+        uuid subject_id FK
+        string unit_name
+        int unit_order
+    }
+    TOPIC {
+        uuid topic_id PK
+        uuid syllabus_id FK
+        string topic_name
+        text description
+    }
+    USER_CONTEXT {
+        uuid context_id PK
+        int user_id FK
+        uuid subject_id FK
+        string last_topic
+        string last_intent
+        datetime updated_at
+    }
+
+    INSTITUTION ||--o{ USER : has
+    USER ||--o{ ROLE_ASSIGNMENT : assignments
+    ROLE ||--o{ ROLE_ASSIGNMENT : assignments
+    INSTITUTION ||--o{ ROLE_ASSIGNMENT : scoped_to
+
+    COURSE ||--o{ SUBJECT : contains
+    SUBJECT ||--o{ SYLLABUS : contains
+    SYLLABUS ||--o{ TOPIC : contains
+
+    USER ||--o{ USER_CONTEXT : has_context
+    SUBJECT ||--o{ USER_CONTEXT : subject_context
+```
+
+Notes:
+- USER.status allowed values: pending | approved | denied | suspended
+- ROLE_ASSIGNMENT.expires_at is optional (nullable)

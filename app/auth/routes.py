@@ -34,7 +34,13 @@ async def get_user_by_email(db: AsyncSession, email: str) -> Optional[User]:
 
 
 async def create_user(db: AsyncSession, user_in: UserCreate) -> User:
-    user = User(email=user_in.email, hashed_password=hash_password(user_in.password), full_name=user_in.full_name)
+    user = User(
+        email=user_in.email,
+        hashed_password=hash_password(user_in.password),
+        full_name=user_in.full_name,
+        institution_id=user_in.institution_id,
+        status="pending",
+    )
     db.add(user)
     await db.commit()
     await db.refresh(user)
