@@ -16,12 +16,15 @@ erDiagram
         string description
         boolean is_system
         boolean is_active
+        datetime created_at
     }
     INSTITUTION {
         int id PK
         string name
         string slug
         string type
+        boolean is_active
+        datetime created_at
     }
     ROLE_ASSIGNMENT {
         int user_id PK FK
@@ -79,3 +82,4 @@ erDiagram
 Notes:
 - USER.status allowed values: pending | approved | denied | suspended
 - ROLE_ASSIGNMENT.expires_at is optional (nullable)
+ - CREATED_AT fields present on USER, ROLE, INSTITUTION for auditing
