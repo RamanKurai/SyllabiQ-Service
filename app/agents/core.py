@@ -2,9 +2,8 @@ from typing import List, Dict, Any, Optional
 import asyncio
 
 """
-Agent skeletons for Intent, Retrieval, Generation, and Validation.
-These are intentionally simple and documented so frontend/backend teams
-can iterate on concrete implementations (LangChain, vector DBs, LLMs).
+Core agent implementations moved into an agents package for better organization.
+Keep these lightweight placeholders until concrete integrations are added.
 """
 
 
