@@ -33,7 +33,7 @@ async def seed(create_dummy_user: bool = True, seed_content: bool = True):
                 await session.flush()
 
                 user = User(
-                    email="demo@syllabiq.local",
+                    email="demo@university.edu",
                     hashed_password=hash_password("password"),
                     full_name="Demo User",
                     institution_id=demo_inst.id,
@@ -56,6 +56,45 @@ async def seed(create_dummy_user: bool = True, seed_content: bool = True):
                 if super_role:
                     ra = RoleAssignment(user_id=user.id, role_id=super_role.id, institution_id=None)
                     session.add(ra)
+                # Create one dummy user per role (if not already present).
+                # Use .edu emails for institution-scoped users.
+                role_user_map = {
+                    "SuperAdmin": "super@syllabiq.local",
+                    "InstitutionAdmin": "instadmin@demo-university.edu",
+                    "Principal": "principal@demo-university.edu",
+                    "Teacher": "teacher@demo-university.edu",
+                    "Student": "student@demo-university.edu",
+                }
+
+                for r in roles:
+                    email = role_user_map.get(r.name, f"{r.name.lower()}@example.com")
+                    # skip the already-created demo user (demo@university.edu)
+                    if email == "demo@university.edu":
+                        continue
+                    # check existence
+                    q = select(User).where(User.email == email)
+                    res_u = await session.execute(q)
+                    existing = res_u.scalars().first()
+                    if existing:
+                        # ensure role assignment exists
+                        qra = select(RoleAssignment).where(RoleAssignment.user_id == existing.id, RoleAssignment.role_id == r.id)
+                        res_ra = await session.execute(qra)
+                        if not res_ra.scalars().first():
+                            inst_id = None if r.name == "SuperAdmin" else demo_inst.id
+                            session.add(RoleAssignment(user_id=existing.id, role_id=r.id, institution_id=inst_id))
+                        continue
+
+                    new_user = User(
+                        email=email,
+                        hashed_password=hash_password("password"),
+                        full_name=f"Demo {r.name}",
+                        institution_id=(None if r.name == "SuperAdmin" else demo_inst.id),
+                        status="approved",
+                    )
+                    session.add(new_user)
+                    await session.flush()
+                    inst_scope = None if r.name == "SuperAdmin" else demo_inst.id
+                    session.add(RoleAssignment(user_id=new_user.id, role_id=r.id, institution_id=inst_scope))
 
                 await session.commit()
                 print("Seeded demo user: demo@syllabiq.local / password and default roles/institution")

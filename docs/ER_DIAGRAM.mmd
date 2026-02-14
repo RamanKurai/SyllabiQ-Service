@@ -27,8 +27,8 @@ erDiagram
         datetime created_at
     }
     ROLE_ASSIGNMENT {
-        int user_id PK FK
-        int role_id PK FK
+        int user_id PK,FK
+        int role_id PK,FK
         int institution_id FK
         datetime assigned_at
         datetime expires_at

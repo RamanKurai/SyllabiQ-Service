@@ -1,34 +1,28 @@
 ```mermaid
 sequenceDiagram
     participant User
-    participant Frontend
-    participant Backend
-    participant IntentAgent
-    participant RetrievalAgent
-    participant GenerationAgent
-    participant ValidationAgent
+    participant UI as Frontend UI
+    participant APIClient
+    participant Backend as Backend (/api)
+    participant Agents as Agents (Intent/Retrieval)
 
-    User->>Frontend: submits query
-    Frontend->>Backend: POST /v1/query (query)
-    Backend->>IntentAgent: detect_intent(query)
-    IntentAgent-->>Backend: intent
-    Backend->>RetrievalAgent: retrieve(query, top_k)
-    RetrievalAgent-->>Backend: chunks
-    Backend->>GenerationAgent: generate(query, intent, chunks)
-    GenerationAgent-->>Backend: generated_answer
-    Backend->>ValidationAgent: validate(generated_answer, context)
-    ValidationAgent-->>Backend: validated_answer + citations
-    Backend-->>Frontend: response (answer, citations)
-    Frontend-->>User: render answer
-```
+    User->>UI: enters query
+    UI->>APIClient: postQuery / streamQuery
+    APIClient->>Backend: POST /api/v1/query
 
-```mermaid
-sequenceDiagram
-    participant User
-    participant Frontend
-    participant Backend
-    User->>Frontend: login
-    Frontend->>Backend: auth request
-    Backend-->>Frontend: session/token
-    Frontend-->>User: authenticated UI
+    Note right of Backend: Backend returns JSON.<br/>No SSE by default.
+
+    Backend->>Agents: intent -> retrieval -> generation
+    Agents-->>Backend: validated_answer + citations
+    Backend-->>APIClient: JSON response
+    APIClient-->>UI: deliver answer
+    UI-->>User: render answer
+
+    rect rgb(240, 248, 255)
+        Note right of User: Authentication Flow
+        User->>UI: submits credentials
+        UI->>APIClient: POST /api/auth/login
+        APIClient-->>UI: token (access_token)
+        UI-->>User: save token
+    end
 ```
