@@ -1,6 +1,7 @@
 from datetime import datetime
 from enum import Enum
 from typing import List, Optional
+import uuid
 
 from sqlmodel import Field, Relationship, SQLModel
 from app.models.role import Role, RoleAssignment
@@ -27,6 +28,8 @@ class User(SQLModel, table=True):
 
     # Each user may belong to one institution (nullable for system users)
     institution_id: Optional[int] = Field(default=None, foreign_key="institution.id", index=True)
+    # Students bind to a department within their institution
+    department_id: Optional[uuid.UUID] = Field(default=None, foreign_key="department.department_id", index=True)
     status: UserStatus = Field(default=UserStatus.pending, index=True)
 
     institution: Optional[Institution] = Relationship(back_populates="users")

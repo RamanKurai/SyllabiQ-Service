@@ -7,7 +7,7 @@ Usage:
 import asyncio
 from app.db import init_db, async_session
 from app.models.user import User
-from app.models.content import Course, Subject, Syllabus, Topic
+from app.models.content import Department, Course, Subject, Syllabus, Topic
 from app.models.role import Role, RoleAssignment
 from app.models.institution import Institution
 from app.auth.routes import hash_password
@@ -110,8 +110,27 @@ async def seed(create_dummy_user: bool = True, seed_content: bool = True):
                 print("Course data already present; skipping content seed")
                 return
 
+            # Get or create demo institution for departments
+            q_inst = select(Institution).where(Institution.slug == "demo-university")
+            res_inst = await session.execute(q_inst)
+            demo_inst = res_inst.scalars().first()
+            if not demo_inst:
+                demo_inst = Institution(name="Demo University", slug="demo-university")
+                session.add(demo_inst)
+                await session.flush()
+
+            # Create sample departments
+            dept_cs = Department(institution_id=demo_inst.id, name="Computer Science", slug="computer-science")
+            dept_finance = Department(institution_id=demo_inst.id, name="Finance", slug="finance")
+            session.add_all([dept_cs, dept_finance])
+            await session.flush()
+
             # Create a minimal sample course -> subject -> syllabus -> topic structure
-            cs_course = Course(course_name="Computer Science", description="Computer Science undergraduate program")
+            cs_course = Course(
+                department_id=dept_cs.department_id,
+                course_name="Computer Science",
+                description="Computer Science undergraduate program",
+            )
             session.add(cs_course)
             await session.flush()  # populate course_id
 

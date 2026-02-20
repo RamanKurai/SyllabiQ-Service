@@ -2,8 +2,7 @@ from typing import List, Dict, Any, Optional
 import asyncio
 
 """
-Core agent implementations moved into an agents package for better organization.
-Keep these lightweight placeholders until concrete integrations are added.
+Core agent implementations: intent, retrieval (ChromaDB), generation (OpenAI), validation.
 """
 
 
@@ -25,26 +24,52 @@ class IntentAgent:
 
 
 class RetrievalAgent:
-    async def retrieve(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    async def retrieve(
+        self,
+        query: str,
+        top_k: int = 5,
+        subject_id: Optional[str] = None,
+        topic_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """
-        Placeholder retrieval: returns stubbed chunks.
-        Integrate with embeddings + vectorstore (FAISS/Chroma) here.
+        Retrieve from ChromaDB vector store. Falls back to stub if not configured.
         """
-        await asyncio.sleep(0)  # placeholder for I/O
-        # Example chunk format: {"id": "c1", "text": "...", "source": "syllabus/unit1"}
-        return [{"id": f"chunk_{i+1}", "text": f"Relevant snippet {i+1} for '{query}'", "source": "syllabus"} for i in range(top_k)]
+        from app.rag.retriever import retrieve_from_vectorstore
+        return await retrieve_from_vectorstore(
+            query, top_k=top_k, subject_id=subject_id, topic_id=topic_id
+        )
 
 
 class GenerationAgent:
     async def generate(self, query: str, intent: str, context: List[Dict[str, Any]], marks: Optional[int] = None) -> Dict[str, Any]:
         """
-        Placeholder generation. Replace with LLM call using context and prompt templates.
-        Return structure: {"answer": str, "raw": {...}}
+        Generate answer using OpenAI LLM with retrieved context.
+        Falls back to simple synthesis if not configured.
         """
-        await asyncio.sleep(0)  # placeholder
-        # Simple synthesized answer using context
-        ctx_text = " ".join([c["text"] for c in context])
-        answer = f"Answer ({intent}, marks={marks}): Based on {len(context)} chunks. Context: {ctx_text}"
+        from app.config import settings
+        ctx_text = "\n\n".join([c.get("text", "") for c in context if c.get("text")])
+        if settings.OPENAI_API_KEY and ctx_text:
+            try:
+                from langchain_openai import ChatOpenAI
+                from langchain.schema import HumanMessage, SystemMessage
+                llm = ChatOpenAI(
+                    model="gpt-4o-mini",
+                    openai_api_key=settings.OPENAI_API_KEY,
+                    temperature=0.3,
+                )
+                system = (
+                    "You are a helpful tutor. Answer based only on the provided syllabus/notes context. "
+                    "Be concise. For exam-style answers, match the expected length (2 marks = brief, 5 = medium, 10 = detailed)."
+                )
+                user = f"Context:\n{ctx_text[:8000]}\n\nQuestion: {query}\n\nProvide a clear answer."
+                msgs = [SystemMessage(content=system), HumanMessage(content=user)]
+                resp = await llm.ainvoke(msgs)
+                answer = resp.content if hasattr(resp, "content") else str(resp)
+                return {"answer": answer, "raw": {"context": context}}
+            except Exception:
+                pass
+        # Fallback
+        answer = f"Based on {len(context)} source(s): " + (ctx_text[:500] + "..." if len(ctx_text) > 500 else ctx_text) if ctx_text else "No relevant content found. Please upload topic materials."
         return {"answer": answer, "raw": {"context": context}}
 
 
@@ -59,6 +84,9 @@ class ValidationAgent:
         # Very simple guardrail: trim overly long answers
         if len(answer) > 2000:
             answer = answer[:2000] + "..."
-        citations = [{"id": c["id"], "source": c.get("source"), "text": c.get("text")[:200]} for c in context]
+        citations = [
+            {"id": c.get("id", ""), "source": c.get("source"), "text": (c.get("text") or "")[:200]}
+            for c in context
+        ]
         return {"answer": answer, "citations": citations}
 

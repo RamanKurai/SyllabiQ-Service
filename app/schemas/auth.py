@@ -1,10 +1,14 @@
 from pydantic import BaseModel, EmailStr, ConfigDict
 from typing import Optional
+import uuid
+
+
 class UserCreate(BaseModel):
     email: EmailStr
     password: str
     full_name: Optional[str] = None
     institution_id: Optional[int] = None
+    department_id: Optional[uuid.UUID] = None
 
 
 class UserRead(BaseModel):
@@ -17,6 +21,7 @@ class UserRead(BaseModel):
     is_active: bool
     status: Optional[str] = None
     institution_id: Optional[int] = None
+    department_id: Optional[uuid.UUID] = None
 
 
 class Token(BaseModel):

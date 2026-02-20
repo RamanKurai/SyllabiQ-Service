@@ -13,7 +13,7 @@ from app.config import settings
 from app.models.institution import Institution
 from app.models.role import Role, RoleAssignment
 from app.models.user import User, UserStatus
-from app.models.content import Course, Subject, Syllabus, Topic
+from app.models.content import Department, Course, Subject, Syllabus, Topic
 from app.models.audit import AuditLog
 from pydantic import BaseModel
 
@@ -313,7 +313,78 @@ async def delete_role(role_id: int, authorization: Optional[str] = Header(None))
 # Admin-protected content CRUD (require SuperAdmin)
 # -----------------------
 
+class DepartmentCreate(BaseModel):
+    institution_id: Optional[int] = None
+    name: str
+    slug: Optional[str] = None
+
+
+class DepartmentUpdate(BaseModel):
+    institution_id: Optional[int] = None
+    name: Optional[str] = None
+    slug: Optional[str] = None
+
+
+@router.post("/content/departments", response_model=Department)
+async def admin_create_department(payload: DepartmentCreate, authorization: Optional[str] = Header(None)):
+    current = await get_current_user(authorization)
+    async with async_session() as session:
+        allowed = await user_has_role(session, current.id, "SuperAdmin")
+        if not allowed:
+            raise HTTPException(status_code=403, detail="Requires SuperAdmin")
+        dept = Department(institution_id=payload.institution_id, name=payload.name, slug=payload.slug)
+        session.add(dept)
+        await _log_audit(session, current.id, "create", "Department", None, {"name": payload.name})
+        await session.commit()
+        await session.refresh(dept)
+        return dept
+
+
+@router.put("/content/departments/{department_id}", response_model=Department)
+async def admin_update_department(department_id: uuid.UUID, payload: DepartmentUpdate, authorization: Optional[str] = Header(None)):
+    current = await get_current_user(authorization)
+    async with async_session() as session:
+        allowed = await user_has_role(session, current.id, "SuperAdmin")
+        if not allowed:
+            raise HTTPException(status_code=403, detail="Requires SuperAdmin")
+        q = select(Department).where(Department.department_id == department_id)
+        res = await session.execute(q)
+        dept = res.scalars().first()
+        if not dept:
+            raise HTTPException(status_code=404, detail="Department not found")
+        if payload.institution_id is not None:
+            dept.institution_id = payload.institution_id
+        if payload.name is not None:
+            dept.name = payload.name
+        if payload.slug is not None:
+            dept.slug = payload.slug
+        session.add(dept)
+        await _log_audit(session, current.id, "update", "Department", department_id, {"name": dept.name})
+        await session.commit()
+        await session.refresh(dept)
+        return dept
+
+
+@router.delete("/content/departments/{department_id}")
+async def admin_delete_department(department_id: uuid.UUID, authorization: Optional[str] = Header(None)):
+    current = await get_current_user(authorization)
+    async with async_session() as session:
+        allowed = await user_has_role(session, current.id, "SuperAdmin")
+        if not allowed:
+            raise HTTPException(status_code=403, detail="Requires SuperAdmin")
+        q = select(Department).where(Department.department_id == department_id)
+        res = await session.execute(q)
+        dept = res.scalars().first()
+        if not dept:
+            raise HTTPException(status_code=404, detail="Department not found")
+        await session.delete(dept)
+        await _log_audit(session, current.id, "delete", "Department", department_id)
+        await session.commit()
+        return {"deleted": True}
+
+
 class CourseCreate(BaseModel):
+    department_id: Optional[uuid.UUID] = None
     course_name: str
     description: Optional[str] = None
 
@@ -325,7 +396,7 @@ async def admin_create_course(payload: CourseCreate, authorization: Optional[str
         allowed = await user_has_role(session, current.id, "SuperAdmin")
         if not allowed:
             raise HTTPException(status_code=403, detail="Requires SuperAdmin")
-        course = Course(course_name=payload.course_name, description=payload.description)
+        course = Course(department_id=payload.department_id, course_name=payload.course_name, description=payload.description)
         session.add(course)
         await _log_audit(session, current.id, "create", "Course", None, {"course_name": payload.course_name})
         await session.commit()
@@ -345,6 +416,7 @@ async def admin_update_course(course_id: uuid.UUID, payload: CourseCreate, autho
         course = res.scalars().first()
         if not course:
             raise HTTPException(status_code=404, detail="Course not found")
+        course.department_id = payload.department_id
         course.course_name = payload.course_name
         course.description = payload.description
         session.add(course)

@@ -28,7 +28,12 @@ async def query_endpoint(payload: QueryRequest):
     """
     try:
         intent = await intent_agent.detect_intent(payload.query, payload.workflow)
-        retrieved = await retrieval_agent.retrieve(payload.query, top_k=payload.top_k or 5)
+        retrieved = await retrieval_agent.retrieve(
+            payload.query,
+            top_k=payload.top_k or 5,
+            subject_id=payload.subject,
+            topic_id=payload.topic,
+        )
         generated = await generation_agent.generate(
             query=payload.query, intent=intent, context=retrieved, marks=payload.marks
         )

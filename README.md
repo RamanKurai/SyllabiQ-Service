@@ -67,9 +67,11 @@ This improves reliability and explainability.
 | API Framework | FastAPI |
 | Language | Python |
 | AI Orchestration | LangChain |
-| Vector Store | FAISS / Chroma |
-| LLM | LLM API (e.g., GPT-based) |
-| Frontend (external) | Next.js |
+| Vector Store | ChromaDB (persistent) |
+| Embeddings | OpenAI text-embedding-3-small |
+| LLM | OpenAI GPT-4o-mini |
+| Document Parsing | PyPDF2, python-docx |
+| Frontend (external) | React + Vite |
 
 ---
 
@@ -111,12 +113,14 @@ Final Response
 ---
 
 ### 3. Vector Knowledge Layer (RAG)
+- **ChromaDB** for persistent vector storage
+- **OpenAI embeddings** (text-embedding-3-small) for semantic search
 - Stores:
   - syllabus
   - unit-wise notes
-  - curated study material
-- Uses embeddings for semantic search
-- Retrieves top‑K relevant chunks per query
+  - topic content (PDF, CSV, DOCX uploads)
+- Chunks topic content via LangChain `RecursiveCharacterTextSplitter`
+- Retrieves top‑K relevant chunks per query with optional subject/topic filters
 
 ---
 
@@ -277,9 +281,22 @@ backend/
 
 ---
 
+## 📦 Content Hierarchy & Student Binding
+
+- **Department** → **Course** → **Subject** → **Syllabus** → **Topic** → **TopicContent**
+- Students bind to a **department** during signup (required when institution is selected)
+- **Topic content upload**: PDF, CSV, DOCX files are parsed, text extracted, and indexed into ChromaDB for RAG
+
+## ⚙️ Configuration
+
+Set in `.env` (see `.env.example`):
+
+- `OPENAI_API_KEY` — Required for RAG (embeddings + generation)
+- `CHROMA_PERSIST_DIR` — ChromaDB persistence directory (default: `./chroma_data`)
+- `UPLOAD_MAX_SIZE_MB` — Max file size for topic uploads (default: 10)
+
 ## 📈 Future Enhancements
 
-- Teacher/admin dashboard
 - Adaptive learning paths
 - Analytics on student queries
 - Voice-based interaction

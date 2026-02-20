@@ -11,6 +11,7 @@ router = APIRouter(tags=["content: courses"])
 
 
 class CourseCreate(SQLModel):
+    department_id: Optional[uuid.UUID] = None
     course_name: str
     description: Optional[str] = None
 
@@ -18,7 +19,11 @@ class CourseCreate(SQLModel):
 @router.post("/courses", response_model=Course)
 async def create_course(payload: CourseCreate):
     async with async_session() as session:
-        course = Course(course_name=payload.course_name, description=payload.description)
+        course = Course(
+            department_id=payload.department_id,
+            course_name=payload.course_name,
+            description=payload.description,
+        )
         session.add(course)
         await session.commit()
         await session.refresh(course)
@@ -52,6 +57,7 @@ async def update_course(course_id: uuid.UUID, payload: CourseCreate):
         course = res.scalars().first()
         if not course:
             raise HTTPException(status_code=404, detail="Course not found")
+        course.department_id = payload.department_id
         course.course_name = payload.course_name
         course.description = payload.description
         session.add(course)

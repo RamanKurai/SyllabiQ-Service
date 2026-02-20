@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_SECONDS: int = 60 * 60 * 24
     CORS_ALLOW_ORIGINS: List[str] = ["*"]
+    UPLOAD_MAX_SIZE_MB: int = 10
+    OPENAI_API_KEY: Optional[str] = None
+    CHROMA_PERSIST_DIR: str = "./chroma_data"
 
     class Config:
         env_file = ".env"

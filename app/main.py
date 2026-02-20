@@ -13,6 +13,8 @@ from app.content.subjects import router as subjects_router
 from app.content.syllabi import router as syllabi_router
 from app.content.topics import router as topics_router
 from app.content.contexts import router as contexts_router
+from app.content.departments import router as departments_router
+from app.content.uploads import router as uploads_router
 from app.admin.routes import router as admin_router
 from app.institutions import router as institutions_router
 from app.dashboard.routes import router as dashboard_router
@@ -20,6 +22,7 @@ from app.dashboard.routes import router as dashboard_router
 import app.models.role  # noqa: F401
 import app.models.institution  # noqa: F401
 import app.models.visits  # noqa: F401
+import app.models.content  # noqa: F401
 
 app = FastAPI(
     title="SyllabiQ Backend",
@@ -45,6 +48,8 @@ app.include_router(subjects_router, prefix="/api/content")
 app.include_router(syllabi_router, prefix="/api/content")
 app.include_router(topics_router, prefix="/api/content")
 app.include_router(contexts_router, prefix="/api/content")
+app.include_router(departments_router, prefix="/api/content")
+app.include_router(uploads_router, prefix="/api/content")
 app.include_router(admin_router, prefix="/api/admin")
 app.include_router(institutions_router, prefix="/api/institutions")
 app.include_router(dashboard_router, prefix="/api/dashboard")

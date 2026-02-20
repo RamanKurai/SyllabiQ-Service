@@ -26,16 +26,18 @@ This guide explains recommended patterns for integrating the Next.js frontend wi
 
 ```javascript
 // POST /api/v1/query
-async function querySyllabiQ(query, workflow, marks=5) {
+async function querySyllabiQ(query, workflow, marks=5, subject, topic) {
   const res = await fetch('/api/v1/query', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, workflow, marks })
+    body: JSON.stringify({ query, workflow, marks, subject, topic })
   });
   if (!res.ok) throw new Error(await res.text());
   return await res.json();
 }
 ```
+
+Pass `subject` and `topic` (IDs) to scope retrieval to specific syllabus content. RAG uses ChromaDB; upload topic content (PDF/CSV/DOCX) via `POST /api/content/topics/{topic_id}/upload` to populate the vector store.
 
 7) Error handling
 - Surface friendly messages: "We couldn't fetch the syllabus content right now — try again."

@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 from app.db import async_session, init_db
 from app.models.user import User
+from app.models.content import Department
 from app.schemas.auth import UserCreate, UserRead, Token, LoginPayload, UserProfile
 from app.models.role import Role, RoleAssignment
 from app.models.role import Role, RoleAssignment
@@ -45,6 +46,7 @@ async def create_user(db: AsyncSession, user_in: UserCreate) -> User:
         hashed_password=hash_password(user_in.password),
         full_name=user_in.full_name,
         institution_id=user_in.institution_id,
+        department_id=user_in.department_id,
         status="pending",
     )
     db.add(user)
@@ -73,6 +75,15 @@ async def signup(user_in: UserCreate):
             email = (user_in.email or "").lower()
             if not email.endswith(".edu"):
                 raise HTTPException(status_code=400, detail="Institution signups require a .edu email address")
+        # Validate department belongs to institution if both provided
+        if user_in.department_id is not None:
+            q_dept = select(Department).where(Department.department_id == user_in.department_id)
+            res_dept = await session.execute(q_dept)
+            dept = res_dept.scalars().first()
+            if not dept:
+                raise HTTPException(status_code=400, detail="Department not found")
+            if user_in.institution_id is not None and dept.institution_id != user_in.institution_id:
+                raise HTTPException(status_code=400, detail="Department does not belong to selected institution")
         user = await create_user(session, user_in)
         return UserRead.from_orm(user)
 
