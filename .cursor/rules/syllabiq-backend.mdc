@@ -1,0 +1,32 @@
+---
+description: Backend FastAPI conventions and patterns
+globs: SyllabiQ-service/**/*.py
+alwaysApply: false
+---
+
+# SyllabiQ Backend Rules
+
+## Stack
+- FastAPI, SQLModel (async), PostgreSQL (asyncpg) or SQLite (aiosqlite)
+- ChromaDB for vectors, OpenAI embeddings + GPT-4o-mini
+- LangChain for RAG orchestration
+
+## Routes
+- Mount under `/api` in `app/main.py`
+- Content: `/api/content/*` (departments, courses, subjects, syllabi, topics, uploads)
+- Auth: `/api/auth/*`; Admin: `/api/admin/*`; Dashboard: `/api/dashboard/*`
+- Query: `POST /api/v1/query` (RAG)
+
+## Models
+- `app/models/content.py` — Department, Course, Subject, Syllabus, Topic, TopicContent, UserContext
+- Content IDs are UUIDs; User uses integer `id`
+
+## RAG
+- `app/rag/vector_store.py` — ChromaDB; metadata: `subject_id`, `topic_id`, `content_id`
+- `app/rag/indexer.py` — Indexes TopicContent on upload
+- Retriever uses `where` filter with `subject_id` and `topic_id` when provided
+
+## Patterns
+- Use `async_session()` for DB; `async with async_session() as session`
+- Pydantic schemas in `app/schemas/`; re-export from `app.schemas`
+- Config: `app.config.settings` (Pydantic BaseSettings)

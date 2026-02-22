@@ -1,0 +1,31 @@
+---
+description: Frontend React patterns and API usage
+globs: SyllabiQ-frontend/**/*.ts,SyllabiQ-frontend/**/*.tsx
+alwaysApply: false
+---
+
+# SyllabiQ Frontend Rules
+
+## Stack
+- React 18, TypeScript, Vite 6, Tailwind v4, Radix UI, Motion (Framer Motion)
+
+## API Client
+- `src/lib/api.ts` — `postQuery`, `streamQuery`, `getSubjects`, `getTopics`, `getInstitutions`, `getDepartments`, `getDashboard`, `authSignup`, `authLogin`
+- Base: `VITE_API_BASE` (default `http://localhost:8000/api`)
+- Auth: `authHeader()` from `src/lib/auth.ts` — include for protected endpoints
+
+## Paths
+- Subject/topic: Use `/content/subjects` and `/content/subjects/{id}/topics` (not `/v1/subjects`)
+- Query: `POST /v1/query` (relative to API_BASE)
+
+## Components
+- `src/app/components/` — UI; `ui/` for Radix primitives
+- `AuthContext`, `DashboardContext` for shared state
+- `ProtectedRoute` for auth-gated routes
+
+## Accessibility
+- WCAG 2.1 AA: contrast 4.5:1, keyboard nav, focus states, aria-labels
+- Icons paired with text; semantic HTML
+
+## Data
+- Pass **UUIDs** for subject/topic to Chat; avoid display names in API calls

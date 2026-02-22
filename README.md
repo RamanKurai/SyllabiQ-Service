@@ -1,15 +1,19 @@
 # SyllabiQ – Backend Service
 **Syllabus-Aware Educational AI using RAG & Multi-Agent Architecture**
 
+> 📌 **This is the backend service.** For the frontend UI, see [SyllabiQ Frontend](../SyllabiQ/README.md).
+
 ---
 
 ## 📌 Overview
 
 SyllabiQ is a backend service for a syllabus-aware educational AI platform designed to help college students with:
-- syllabus-aligned Q&A
-- exam-oriented explanations
-- notes summarization
-- practice question generation
+- Syllabus-aligned Q&A
+- Exam-oriented explanations
+- Notes summarization
+- Practice question generation
+
+**Frontend**: The [SyllabiQ React frontend](../SyllabiQ/README.md) provides the user interface for these features.
 
 The backend is built using **FastAPI**, **LangChain**, and **Retrieval-Augmented Generation (RAG)** with a **multi-agent orchestration layer** to ensure accuracy, control, and scalability.
 
@@ -247,27 +251,125 @@ The system enforces guardrails at **multiple levels**:
 
 ## 📂 Suggested Backend Folder Structure
 
-backend/
-│
+```
+SyllabiQ-Service/
 ├── app/
-│ ├── main.py
-│ ├── api/
-│ ├── agents/
-│ │ ├── intent_agent.py
-│ │ ├── retrieval_agent.py
-│ │ ├── generation_agent.py
-│ │ └── validation_agent.py
-│ ├── rag/
-│ │ ├── embeddings.py
-│ │ ├── vector_store.py
-│ │ └── retriever.py
-│ ├── prompts/
-│ ├── schemas/
-│ └── utils/
+│   ├── main.py                     # FastAPI app initialization & routing
+│   ├── api.py                      # Main API endpoints
+│   ├── config.py                   # Configuration management
+│   ├── agents.py                   # Agent orchestration logic
+│   ├── institutions.py             # Institution management utilities
+│   ├── prompts.py                  # LLM prompt templates
+│   ├── rag.py                      # RAG pipeline wrapper
+│   ├── schemas.py                  # Pydantic request/response schemas
+│   │
+│   ├── admin/                      # Admin panel API routes
+│   │   └── routes.py               # Admin user/role/institution management
+│   │
+│   ├── auth/                       # Authentication & authorization
+│   │   └── routes.py               # Login, signup, token refresh
+│   │
+│   ├── content/                    # Content management (syllabus, topics, etc.)
+│   │   ├── __init__.py
+│   │   ├── routes.py               # Main content API endpoints
+│   │   ├── contexts.py             # Learning contexts database ops
+│   │   ├── courses.py              # Course management
+│   │   ├── departments.py          # Department management
+│   │   ├── subjects.py             # Subject management
+│   │   ├── syllabi.py              # Syllabus management
+│   │   ├── topics.py               # Topic management
+│   │   └── uploads.py              # File upload handling & parsing
+│   │
+│   ├── dashboard/                  # Dashboard & analytics
+│   │   └── routes.py               # Dashboard stats & KPIs
+│   │
+│   ├── db/                         # Database utilities
+│   │   ├── __init__.py
+│   │   ├── utils.py                # Common database operations
+│   │   └── middleware.py           # Database connection middleware
+│   │
+│   ├── models/                     # SQLAlchemy ORM models
+│   │   ├── audit.py                # Audit log model
+│   │   ├── institution.py          # Institution model
+│   │   ├── role.py                 # Role & permissions model
+│   │   ├── user.py                 # User model
+│   │   ├── content.py              # Content models (Syllabus, Topic, etc.)
+│   │   └── visits.py               # User activity tracking model
+│   │
+│   ├── agents/                     # Multi-agent orchestration
+│   │   ├── __init__.py
+│   │   └── core.py                 # Agent implementations & workflows
+│   │
+│   ├── rag/                        # Retrieval-Augmented Generation
+│   │   ├── indexer.py              # Indexing & chunking logic
+│   │   ├── retriever.py            # Vector similarity search
+│   │   └── vector_store.py         # ChromaDB interface
+│   │
+│   ├── prompts/                    # Prompt templates & orchestration
+│   │   └── __init__.py             # Prompt registry
+│   │
+│   ├── schemas/                    # Pydantic schemas for validation
+│   │   ├── __init__.py
+│   │   └── auth.py                 # Auth request/response schemas
+│   │
+│   └── seeds/                      # Database seeding
+│       └── seed_db.py              # Initial data population
 │
-├── data/
-├── requirements.txt
-└── README.md
+├── requirements.txt                # Python dependencies
+├── .env.example                    # Environment template
+├── README.md                       # This file
+└── docs/                           # Documentation (external)
+    ├── API.md
+    ├── ARCHITECTURE.md
+    ├── SCHEMA.md
+    └── SEQUENCE_DIAGRAMS.mmd
+```
+
+---
+
+## 🗂️ Module Descriptions
+
+### Core Controllers
+| Module | Role |
+|--------|------|
+| `api.py` | Main query endpoint → Intent Agent → Final response |
+| `agents.py` | Multi-agent orchestration & workflow management |
+| `rag.py` | RAG pipeline (retrieval + generation) |
+| `config.py` | Environment & configuration management |
+
+### API Routes
+| Module | Responsibility |
+|--------|-----------------|
+| `auth/routes.py` | Authentication (login, signup, token refresh) |
+| `admin/routes.py` | User/role/institution CRUD operations |
+| `content/routes.py` | Syllabus, course, topic, subject management |
+| `dashboard/routes.py` | Analytics, KPIs, usage statistics |
+
+### Content Management
+| Module | Purpose |
+|--------|---------|
+| `content/uploads.py` | File parsing (PDF, DOCX, CSV) & text extraction |
+| `content/syllabi.py` | Syllabus CRUD & indexing |
+| `content/topics.py` | Topic & topic content management |
+| `content/courses.py` | Course structure management |
+| `content/subjects.py` | Subject management |
+
+### Data Layer
+| Module | Purpose |
+|--------|---------|
+| `models/` | SQLAlchemy ORM models (User, Institution, Content, etc.) |
+| `db/utils.py` | Database operations (queries, transactions) |
+| `db/middleware.py` | Database session & connection management |
+| `schemas/` | Pydantic validation schemas |
+
+### Intelligence Layer
+| Module | Purpose |
+|--------|---------|
+| `agents/core.py` | Intent, Retrieval, Generation, Validation agents |
+| `rag/vector_store.py` | ChromaDB interface for semantic search |
+| `rag/retriever.py` | Query embedding & context retrieval |
+| `rag/indexer.py` | Text chunking & vector indexing |
+| `prompts/` | Prompt templates for each agent workflow |
 
 
 ---
@@ -286,6 +388,38 @@ backend/
 - **Department** → **Course** → **Subject** → **Syllabus** → **Topic** → **TopicContent**
 - Students bind to a **department** during signup (required when institution is selected)
 - **Topic content upload**: PDF, CSV, DOCX files are parsed, text extracted, and indexed into ChromaDB for RAG
+
+---
+
+## 🚀 Quick Start
+
+### 1. Backend Setup
+```bash
+# Create virtual environment with Python 3.12
+uv venv --python 3.12
+source .venv/bin/activate
+
+# Install dependencies
+uv pip install -r requirements.txt
+```
+
+### 2. Start Backend Server
+```bash
+uv run uvicorn app.main:app --reload --port 8000
+```
+
+The API will be available at `http://localhost:8000`, with docs at `http://localhost:8000/docs`.
+
+### 3. Frontend Setup (Optional)
+From the `SyllabiQ` directory:
+```bash
+pnpm install
+VITE_API_BASE=http://localhost:8000/api pnpm dev
+```
+
+For detailed frontend setup, see [SyllabiQ Frontend README](../SyllabiQ/README.md).
+
+---
 
 ## ⚙️ Configuration
 

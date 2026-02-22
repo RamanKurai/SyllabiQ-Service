@@ -1,0 +1,37 @@
+---
+description: API contract and frontend-backend integration
+globs: SyllabiQ-frontend/src/lib/api.ts,SyllabiQ-service/app/api.py,SyllabiQ-service/app/content/**/*.py,SyllabiQ-service/app/auth/**/*.py
+alwaysApply: false
+---
+
+# SyllabiQ API Contract
+
+## Query Request (RAG)
+```json
+{
+  "query": "string",
+  "workflow": "qa|summarize|generate",
+  "marks": 2|5|10,
+  "top_k": 5,
+  "format": "bullets|paragraph",
+  "subject": "uuid",
+  "topic": "uuid"
+}
+```
+- `subject` and `topic` must be UUIDs for RAG filtering.
+- Frontend must pass IDs from API, not display names.
+
+## Content Endpoints
+- `GET /api/content/subjects` — list subjects
+- `GET /api/content/subjects/{subject_id}/topics` — topics for subject (Phase 1)
+- `GET /api/content/topics?syllabus_id=` — topics by syllabus
+- Subjects: `{subject_id, subject_name, ...}`; map to `{id, name}` on frontend if needed
+
+## Auth
+- `POST /api/auth/signup` — body: `email`, `password`, `full_name`, `institution_id`, `department_id`
+- `POST /api/auth/login` — returns `{access_token, token_type}`
+- Include `Authorization: Bearer <token>` for protected routes
+
+## Compatibility
+- Frontend `getSubjects`/`getTopics` must call `/content/subjects` and `/content/subjects/{id}/topics`.
+- Chat `QueryRequest` must use `subject_id` and `topic_id` (UUIDs).

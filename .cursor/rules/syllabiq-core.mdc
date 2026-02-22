@@ -1,0 +1,37 @@
+---
+description: SyllabiQ project overview and core conventions for quick agent initialization
+alwaysApply: true
+---
+
+# SyllabiQ — Project Context
+
+## What It Is
+Syllabus-aware educational AI platform: RAG-based Q&A, notes summarization, practice question generation for college students.
+
+## Structure
+- **SyllabiQ-frontend/** — React 18, TypeScript, Vite 6, Tailwind v4, Radix UI
+- **SyllabiQ-service/** — FastAPI, SQLModel, ChromaDB, LangChain, OpenAI
+
+## Content Hierarchy
+
+```
+Department → Course → Subject → Syllabus → Topic → TopicContent
+```
+
+- Students bind to **department** on signup (when institution selected).
+- RAG uses **subject_id** and **topic_id** (UUIDs) for scoped retrieval.
+- Topic content (PDF/CSV/DOCX) is uploaded via `POST /api/content/topics/{id}/upload`.
+
+## API Base
+- Backend: `http://localhost:8000/api` (dev)
+- Frontend: `VITE_API_BASE` in `.env` (default `http://localhost:8000/api`)
+
+## Key Conventions
+- **WCAG 2.1 AA+**: Contrast 4.5:1 text, 3:1 large text; keyboard access; semantic HTML.
+- **Auth**: JWT in `Authorization: Bearer <token>`; `authHeader()` in `src/lib/auth.ts`.
+- **IDs**: Use UUIDs for subject/topic in API calls; backend expects `subject_id`, `topic_id` in queries.
+
+## Reference
+- Implementation plan: `implementationPlan.md`
+- Backend API: `SyllabiQ-service/docs/API.md`
+- Integration: `SyllabiQ-service/docs/INTEGRATION.md`
