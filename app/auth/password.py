@@ -1,0 +1,12 @@
+"""Password hashing utilities. Extracted to avoid circular imports."""
+from passlib.context import CryptContext
+
+pwd_context = CryptContext(schemes=["sha256_crypt", "bcrypt"], deprecated="auto")
+
+
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    return pwd_context.verify(plain, hashed)

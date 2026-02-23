@@ -38,6 +38,12 @@ class LoginPayload(BaseModel):
     password: str
 
 
+class RoleAssignmentRead(BaseModel):
+    role_name: str
+    institution_id: Optional[int] = None
+
+
 class UserProfile(UserRead):
     roles: Optional[list[str]] = None
+    role_assignments: Optional[list[RoleAssignmentRead]] = None
 

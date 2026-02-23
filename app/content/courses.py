@@ -31,9 +31,11 @@ async def create_course(payload: CourseCreate):
 
 
 @router.get("/courses", response_model=List[Course])
-async def list_courses():
+async def list_courses(department_id: Optional[uuid.UUID] = None):
     async with async_session() as session:
         q = select(Course)
+        if department_id is not None:
+            q = q.where(Course.department_id == department_id)
         res = await session.execute(q)
         return res.scalars().all()
 

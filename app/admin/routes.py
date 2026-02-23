@@ -15,6 +15,7 @@ from app.models.role import Role, RoleAssignment
 from app.models.user import User, UserStatus
 from app.models.content import Department, Course, Subject, Syllabus, Topic
 from app.models.audit import AuditLog
+from app.auth.password import hash_password
 from pydantic import BaseModel
 
 router = APIRouter(tags=["admin"])
@@ -67,6 +68,99 @@ async def user_has_role(session: AsyncSession, user_id: int, role_name: str, ins
     return False
 
 
+async def user_has_superadmin_role(session: AsyncSession, user_id: int) -> bool:
+    """Check if the given user has SuperAdmin role."""
+    return await user_has_role(session, user_id, "SuperAdmin")
+
+
+# Role hierarchy (higher index = lower privilege). Callers cannot see users with roles above their level.
+ROLE_HIERARCHY = ["SuperAdmin", "InstitutionAdmin", "Principal", "Teacher", "Student"]
+
+
+async def get_caller_highest_admin_role(session: AsyncSession, user_id: int) -> Optional[str]:
+    """Return the highest admin role the user has (first match in hierarchy)."""
+    for role_name in ROLE_HIERARCHY[:-1]:  # exclude Student
+        if await user_has_role(session, user_id, role_name):
+            return role_name
+    return None
+
+
+def get_roles_to_exclude_for_caller(caller_highest_role: Optional[str]) -> List[str]:
+    """
+    Roles the caller cannot see or act on (higher in hierarchy).
+    SuperAdmin: none; InstitutionAdmin: SuperAdmin; Principal: SuperAdmin, InstitutionAdmin;
+    Teacher: SuperAdmin, InstitutionAdmin, Principal.
+    """
+    if not caller_highest_role or caller_highest_role == "SuperAdmin":
+        return []
+    try:
+        idx = ROLE_HIERARCHY.index(caller_highest_role)
+        return ROLE_HIERARCHY[:idx]
+    except ValueError:
+        return []
+
+
+async def target_user_has_any_role(session: AsyncSession, user_id: int, role_names: List[str]) -> bool:
+    """Check if the user has any of the given roles."""
+    for rn in role_names:
+        if await user_has_role(session, user_id, rn):
+            return True
+    return False
+
+
+async def caller_can_access_user(session: AsyncSession, caller_id: int, target_user_id: int, target_institution_id: Optional[int]) -> bool:
+    """
+    True if caller may view/modify the target user per role hierarchy.
+    SuperAdmin: all; others: institution scope + cannot access users with higher roles.
+    """
+    if await user_has_role(session, caller_id, "SuperAdmin"):
+        return True
+    accessible = await get_user_accessible_institution_ids(session, caller_id)
+    if accessible is None:
+        return True
+    if not accessible or (target_institution_id and target_institution_id not in accessible):
+        return False
+    caller_role = await get_caller_highest_admin_role(session, caller_id)
+    excluded = get_roles_to_exclude_for_caller(caller_role)
+    if not excluded:
+        return True
+    return not await target_user_has_any_role(session, target_user_id, excluded)
+
+
+async def caller_can_admin_for_institution(session: AsyncSession, caller_id: int, institution_id: Optional[int]) -> bool:
+    """True if caller can perform admin actions (approve, etc.) for the given institution."""
+    if await user_has_role(session, caller_id, "SuperAdmin"):
+        return True
+    if institution_id is None:
+        return False
+    return (
+        await user_has_role(session, caller_id, "InstitutionAdmin", institution_id)
+        or await user_has_role(session, caller_id, "Principal", institution_id)
+        or await user_has_role(session, caller_id, "Teacher", institution_id)
+    )
+
+
+async def get_user_accessible_institution_ids(session: AsyncSession, user_id: int) -> Optional[List[int]]:
+    """
+    Return institution IDs the user can access for admin scoping.
+    None = SuperAdmin (global, no filter); [] = no access; [id, ...] = scoped.
+    """
+    if await user_has_role(session, user_id, "SuperAdmin"):
+        return None
+    q = (
+        select(RoleAssignment.institution_id)
+        .join(Role, RoleAssignment.role_id == Role.id)
+        .where(
+            RoleAssignment.user_id == user_id,
+            Role.name.in_(["InstitutionAdmin", "Principal", "Teacher"]),
+            RoleAssignment.institution_id.isnot(None),
+        )
+    )
+    res = await session.execute(q)
+    ids = [r[0] for r in res.all() if r[0] is not None]
+    return list(dict.fromkeys(ids))  # unique, preserve order
+
+
 async def _log_audit(session: AsyncSession, user_id: Optional[int], action: str, entity: Optional[str] = None, entity_id: Optional[str] = None, details: Optional[dict] = None):
     try:
         al = AuditLog(user_id=user_id, action=action, entity=entity, entity_id=str(entity_id) if entity_id is not None else None, details=details)
@@ -77,22 +171,65 @@ async def _log_audit(session: AsyncSession, user_id: Optional[int], action: str,
         pass
 
 
+class InstituteAdminCreate(BaseModel):
+    email: str
+    password: str
+    full_name: Optional[str] = None
+
+
 class InstitutionCreate(BaseModel):
     name: str
     slug: Optional[str] = None
     type: Optional[str] = "college"
+    institute_admin: Optional[InstituteAdminCreate] = None
 
 
 @router.post("/institutions", response_model=Institution)
 async def create_institution(payload: InstitutionCreate, authorization: Optional[str] = Header(None)):
     current = await get_current_user(authorization)
-    # only SuperAdmin can create institutions
     async with async_session() as session:
         allowed = await user_has_role(session, current.id, "SuperAdmin")
         if not allowed:
             raise HTTPException(status_code=403, detail="Requires SuperAdmin")
-        inst = Institution(name=payload.name, slug=payload.slug or payload.name.lower().replace(" ", "-"), type=payload.type)
+
+        inst = Institution(
+            name=payload.name,
+            slug=payload.slug or payload.name.lower().replace(" ", "-"),
+            type=payload.type,
+        )
         session.add(inst)
+        await session.flush()
+
+        if payload.institute_admin:
+            admin_data = payload.institute_admin
+            # Check email not already used
+            q = select(User).where(User.email == admin_data.email)
+            res = await session.execute(q)
+            if res.scalars().first():
+                raise HTTPException(status_code=400, detail=f"Email {admin_data.email} already registered")
+
+            admin_user = User(
+                email=admin_data.email,
+                hashed_password=hash_password(admin_data.password),
+                full_name=admin_data.full_name or admin_data.email.split("@")[0],
+                institution_id=inst.id,
+                status=UserStatus.approved,
+            )
+            session.add(admin_user)
+            await session.flush()
+
+            q_role = select(Role).where(Role.name == "InstitutionAdmin")
+            res_role = await session.execute(q_role)
+            role = res_role.scalars().first()
+            if role:
+                session.add(
+                    RoleAssignment(
+                        user_id=admin_user.id,
+                        role_id=role.id,
+                        institution_id=inst.id,
+                    )
+                )
+
         await _log_audit(session, current.id, "create_institution", "Institution", None, {"name": payload.name})
         await session.commit()
         await session.refresh(inst)
@@ -164,29 +301,54 @@ async def delete_institution(institution_id: int, authorization: Optional[str] =
 async def get_kpis(days: int = 7, authorization: Optional[str] = Header(None)):
     """
     Return aggregated counts and a simple time-series of signups and approvals for the last `days`.
+    SuperAdmin: global; Principal/Teacher/InstitutionAdmin: scoped to their institution(s).
     """
     current = await get_current_user(authorization)
     async with async_session() as session:
-        # require SuperAdmin
-        allowed = await user_has_role(session, current.id, "SuperAdmin")
+        accessible = await get_user_accessible_institution_ids(session, current.id)
+        allowed = accessible is None or len(accessible) > 0
         if not allowed:
-            raise HTTPException(status_code=403, detail="Requires SuperAdmin")
+            raise HTTPException(status_code=403, detail="No institution access")
 
-        # counts
-        res = await session.execute(select(func.count(User.id)))
+        user_filter = [User.institution_id.in_(accessible)] if accessible else []
+        dept_filter = [Department.institution_id.in_(accessible)] if accessible else []
+
+        q_users = select(func.count(User.id))
+        if user_filter:
+            q_users = q_users.where(*user_filter)
+        res = await session.execute(q_users)
         total_users = int(res.scalar_one() or 0)
-        res = await session.execute(select(func.count()).select_from(User).where(User.status == "pending"))
+        q_pending = select(func.count()).select_from(User).where(User.status == "pending")
+        if user_filter:
+            q_pending = q_pending.where(*user_filter)
+        res = await session.execute(q_pending)
         pending_users = int(res.scalar_one() or 0)
-        res = await session.execute(select(func.count()).select_from(User).where(User.is_active == True))
+        q_active = select(func.count()).select_from(User).where(User.is_active == True)
+        if user_filter:
+            q_active = q_active.where(*user_filter)
+        res = await session.execute(q_active)
         active_users = int(res.scalar_one() or 0)
 
-        res = await session.execute(select(func.count()).select_from(Institution))
+        if accessible:
+            res = await session.execute(select(func.count()).select_from(Institution).where(Institution.id.in_(accessible)))
+        else:
+            res = await session.execute(select(func.count()).select_from(Institution))
         institutions_count = int(res.scalar_one() or 0)
         res = await session.execute(select(func.count()).select_from(Role))
         roles_count = int(res.scalar_one() or 0)
-        res = await session.execute(select(func.count()).select_from(Course))
+        if accessible:
+            res = await session.execute(
+                select(func.count()).select_from(Course).join(Department, Course.department_id == Department.department_id).where(*dept_filter)
+            )
+        else:
+            res = await session.execute(select(func.count()).select_from(Course))
         courses_count = int(res.scalar_one() or 0)
-        res = await session.execute(select(func.count()).select_from(Subject))
+        if accessible:
+            res = await session.execute(
+                select(func.count()).select_from(Subject).join(Course).join(Department, Course.department_id == Department.department_id).where(*dept_filter)
+            )
+        else:
+            res = await session.execute(select(func.count()).select_from(Subject))
         subjects_count = int(res.scalar_one() or 0)
         res = await session.execute(select(func.count()).select_from(Topic))
         topics_count = int(res.scalar_one() or 0)
@@ -205,15 +367,16 @@ async def get_kpis(days: int = 7, authorization: Optional[str] = Header(None)):
             "syllabi_count": syllabi_count,
         }
 
-        # time-series (signups by created_at date, approvals from audit logs)
         cutoff = datetime.utcnow() - timedelta(days=days - 1)
-        # initialize series with zero values for each day
         series_map: dict[str, dict] = {}
         for i in range(days):
             d = (date.today() - timedelta(days=(days - 1 - i))).isoformat()
             series_map[d] = {"date": d, "signups": 0, "approvals": 0}
 
-        q = select(func.date(User.created_at), func.count()).where(User.created_at >= cutoff).group_by(func.date(User.created_at)).order_by(func.date(User.created_at))
+        q = select(func.date(User.created_at), func.count()).where(User.created_at >= cutoff)
+        if user_filter:
+            q = q.where(*user_filter)
+        q = q.group_by(func.date(User.created_at)).order_by(func.date(User.created_at))
         res = await session.execute(q)
         for row in res.all():
             day = (row[0] if isinstance(row[0], str) else row[0].isoformat())
@@ -227,9 +390,7 @@ async def get_kpis(days: int = 7, authorization: Optional[str] = Header(None)):
             series_map.setdefault(day, {"date": day, "signups": 0, "approvals": 0})
             series_map[day]["approvals"] = int(row[1] or 0)
 
-        # produce ordered list
-        series = [series_map[d.isoformat()] if isinstance(d, date) else series_map[d] for d in [ (date.today() - timedelta(days=(days - 1 - i))).isoformat() for i in range(days) ]]
-
+        series = [series_map[(date.today() - timedelta(days=(days - 1 - i))).isoformat()] for i in range(days)]
         return {"counts": counts, "series": series}
 
 class RoleCreate(BaseModel):
@@ -636,17 +797,28 @@ class RoleAssignPayload(BaseModel):
 @router.post("/role-assignments")
 async def assign_role(payload: RoleAssignPayload, authorization: Optional[str] = Header(None)):
     current = await get_current_user(authorization)
+    if payload.user_id == current.id:
+        raise HTTPException(status_code=403, detail="Cannot assign roles to yourself")
     async with async_session() as session:
-        # If assigning global role (institution_id is None) require SuperAdmin
+        target_res = await session.execute(select(User).where(User.id == payload.user_id))
+        target_user = target_res.scalars().first()
+        if not target_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        if not await caller_can_access_user(session, current.id, payload.user_id, target_user.institution_id or payload.institution_id):
+            raise HTTPException(status_code=403, detail="Cannot modify users with higher roles")
+        role_res = await session.execute(select(Role).where(Role.id == payload.role_id))
+        role = role_res.scalars().first()
+        if not role:
+            raise HTTPException(status_code=404, detail="Role not found")
+        caller_role = await get_caller_highest_admin_role(session, current.id)
+        if role.name in get_roles_to_exclude_for_caller(caller_role):
+            raise HTTPException(status_code=403, detail=f"Cannot assign {role.name} role")
         if payload.institution_id is None:
-            allowed = await user_has_role(session, current.id, "SuperAdmin")
-            if not allowed:
+            if not await user_has_role(session, current.id, "SuperAdmin"):
                 raise HTTPException(status_code=403, detail="Requires SuperAdmin to assign global roles")
         else:
-            # allow if current is SuperAdmin or InstitutionAdmin for that institution
-            allowed = await user_has_role(session, current.id, "SuperAdmin") or await user_has_role(session, current.id, "InstitutionAdmin", payload.institution_id)
-            if not allowed:
-                raise HTTPException(status_code=403, detail="Requires InstitutionAdmin or SuperAdmin")
+            if not await caller_can_admin_for_institution(session, current.id, payload.institution_id):
+                raise HTTPException(status_code=403, detail="Requires admin role for institution")
 
         # create assignment
         ra = RoleAssignment(user_id=payload.user_id, role_id=payload.role_id, institution_id=payload.institution_id)
@@ -660,42 +832,91 @@ async def assign_role(payload: RoleAssignPayload, authorization: Optional[str] =
 async def list_pending_users(institution_id: Optional[int] = None, limit: int = 50, offset: int = 0, authorization: Optional[str] = Header(None)):
     current = await get_current_user(authorization)
     async with async_session() as session:
-        # Only allowed for SuperAdmin or InstitutionAdmin of the institution
+        accessible = await get_user_accessible_institution_ids(session, current.id)
+        if accessible is not None and len(accessible) == 0:
+            raise HTTPException(status_code=403, detail="No institution access")
         if institution_id is not None:
-            allowed = await user_has_role(session, current.id, "SuperAdmin") or await user_has_role(session, current.id, "InstitutionAdmin", institution_id)
+            if accessible is not None and institution_id not in accessible:
+                raise HTTPException(status_code=403, detail="Institution not accessible")
+            allowed = (
+                await user_has_role(session, current.id, "SuperAdmin")
+                or await user_has_role(session, current.id, "InstitutionAdmin", institution_id)
+                or await user_has_role(session, current.id, "Principal", institution_id)
+                or await user_has_role(session, current.id, "Teacher", institution_id)
+            )
             if not allowed:
-                raise HTTPException(status_code=403, detail="Requires InstitutionAdmin or SuperAdmin")
+                raise HTTPException(status_code=403, detail="Requires admin role for institution")
+        elif accessible:
+            institution_id = accessible[0]
         q = select(User).where(User.status == "pending")
         if institution_id is not None:
             q = q.where(User.institution_id == institution_id)
+        if accessible is not None:
+            excluded = get_roles_to_exclude_for_caller(await get_caller_highest_admin_role(session, current.id))
+            if excluded:
+                exclude_ids = select(RoleAssignment.user_id).join(Role, RoleAssignment.role_id == Role.id).where(Role.name.in_(excluded))
+                q = q.where(~User.id.in_(exclude_ids))
         q = q.limit(limit).offset(offset)
         res = await session.execute(q)
         return res.scalars().all()
 
 
 @router.get("/users", response_model=list[User])
-async def list_users(status: Optional[str] = None, institution_id: Optional[int] = None, limit: int = 50, offset: int = 0, authorization: Optional[str] = Header(None)):
+async def list_users(
+    status: Optional[str] = None,
+    institution_id: Optional[int] = None,
+    role_name: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    authorization: Optional[str] = Header(None),
+):
     """
-    List users with optional status filter, pagination, and optional institution scoping.
+    List users with optional status, institution, and role filters; pagination.
+    Principal/Teacher: scoped to their institution(s); Teacher sees Student only by default.
     """
     current = await get_current_user(authorization)
     async with async_session() as session:
-        # If institution_id provided, allow SuperAdmin or InstitutionAdmin for that institution
-        if institution_id is not None:
-            allowed = await user_has_role(session, current.id, "SuperAdmin") or await user_has_role(session, current.id, "InstitutionAdmin", institution_id)
-            if not allowed:
-                raise HTTPException(status_code=403, detail="Requires InstitutionAdmin or SuperAdmin")
-        else:
-            # When no institution_id is provided, require SuperAdmin to list across all institutions
-            allowed = await user_has_role(session, current.id, "SuperAdmin")
-            if not allowed:
-                raise HTTPException(status_code=403, detail="Requires SuperAdmin")
+        accessible = await get_user_accessible_institution_ids(session, current.id)
+        if accessible is not None and len(accessible) == 0:
+            raise HTTPException(status_code=403, detail="No institution access")
 
-        q = select(User)
+        is_super = accessible is None
+        is_principal = await user_has_role(session, current.id, "Principal")
+        is_teacher = await user_has_role(session, current.id, "Teacher")
+
+        if institution_id is not None:
+            if not is_super and institution_id not in (accessible or []):
+                raise HTTPException(status_code=403, detail="Institution not accessible")
+        else:
+            if not is_super and accessible:
+                institution_id = accessible[0]
+
+        effective_role = role_name
+        if is_teacher and not is_principal:
+            effective_role = effective_role or None
+        elif is_principal and not is_super and not effective_role:
+            effective_role = None
+
+        q = select(User).distinct()
+        if effective_role is not None and effective_role != "":
+            q = q.join(RoleAssignment, User.id == RoleAssignment.user_id).join(Role, RoleAssignment.role_id == Role.id)
+            q = q.where(Role.name == effective_role)
+        elif is_principal and not is_super:
+            q = q.join(RoleAssignment, User.id == RoleAssignment.user_id).join(Role, RoleAssignment.role_id == Role.id)
+            q = q.where(Role.name.in_(["Principal", "Teacher", "Student"]))
+        elif is_teacher and not is_principal:
+            q = q.join(RoleAssignment, User.id == RoleAssignment.user_id).join(Role, RoleAssignment.role_id == Role.id)
+            q = q.where(Role.name.in_(["Teacher", "Student"]))
         if status is not None and status != "":
             q = q.where(User.status == status)
         if institution_id is not None:
             q = q.where(User.institution_id == institution_id)
+        elif accessible is not None:
+            q = q.where(User.institution_id.in_(accessible))
+        excluded = get_roles_to_exclude_for_caller(await get_caller_highest_admin_role(session, current.id))
+        if excluded:
+            exclude_ids = select(RoleAssignment.user_id).join(Role, RoleAssignment.role_id == Role.id).where(Role.name.in_(excluded))
+            q = q.where(~User.id.in_(exclude_ids))
         q = q.limit(limit).offset(offset)
         res = await session.execute(q)
         return res.scalars().all()
@@ -708,16 +929,23 @@ class ApprovePayload(BaseModel):
 @router.post("/users/{user_id}/approve")
 async def approve_user(user_id: int, payload: ApprovePayload, authorization: Optional[str] = Header(None)):
     current = await get_current_user(authorization)
+    if user_id == current.id:
+        raise HTTPException(status_code=403, detail="Cannot approve yourself")
     async with async_session() as session:
         q = select(User).where(User.id == user_id)
         res = await session.execute(q)
         user = res.scalars().first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        # Only institution admin for the user's institution or superadmin can approve
-        allowed = await user_has_role(session, current.id, "SuperAdmin") or (user.institution_id and await user_has_role(session, current.id, "InstitutionAdmin", user.institution_id))
-        if not allowed:
-            raise HTTPException(status_code=403, detail="Requires InstitutionAdmin or SuperAdmin")
+        if not await caller_can_admin_for_institution(session, current.id, user.institution_id):
+            raise HTTPException(status_code=403, detail="Requires admin role for institution")
+        if not await caller_can_access_user(session, current.id, user.id, user.institution_id):
+            raise HTTPException(status_code=403, detail="Cannot access users with higher roles")
+        if payload.assign_role_id:
+            role_res = await session.execute(select(Role).where(Role.id == payload.assign_role_id))
+            role = role_res.scalars().first()
+            if role and role.name in get_roles_to_exclude_for_caller(await get_caller_highest_admin_role(session, current.id)):
+                raise HTTPException(status_code=403, detail=f"Cannot assign {role.name} role")
         user.status = "approved"
         session.add(user)
         # optionally assign role (e.g., Student)
@@ -732,15 +960,18 @@ async def approve_user(user_id: int, payload: ApprovePayload, authorization: Opt
 @router.post("/users/{user_id}/deny")
 async def deny_user(user_id: int, authorization: Optional[str] = Header(None)):
     current = await get_current_user(authorization)
+    if user_id == current.id:
+        raise HTTPException(status_code=403, detail="Cannot deny yourself")
     async with async_session() as session:
         q = select(User).where(User.id == user_id)
         res = await session.execute(q)
         user = res.scalars().first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        allowed = await user_has_role(session, current.id, "SuperAdmin") or (user.institution_id and await user_has_role(session, current.id, "InstitutionAdmin", user.institution_id))
-        if not allowed:
-            raise HTTPException(status_code=403, detail="Requires InstitutionAdmin or SuperAdmin")
+        if not await caller_can_admin_for_institution(session, current.id, user.institution_id):
+            raise HTTPException(status_code=403, detail="Requires admin role for institution")
+        if not await caller_can_access_user(session, current.id, user.id, user.institution_id):
+            raise HTTPException(status_code=403, detail="Cannot access users with higher roles")
         user.status = "denied"
         session.add(user)
         await _log_audit(session, current.id, "deny_user", "User", user.id)
@@ -763,32 +994,40 @@ class UserUpdatePayload(BaseModel):
 @router.get("/users/{user_id}", response_model=User)
 async def get_user(user_id: int, authorization: Optional[str] = Header(None)):
     current = await get_current_user(authorization)
-    # allow admins or the user themself
     async with async_session() as session:
         q = select(User).where(User.id == user_id)
         res = await session.execute(q)
         user = res.scalars().first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        allowed = await user_has_role(session, current.id, "SuperAdmin") or current.id == user_id or (user.institution_id and await user_has_role(session, current.id, "InstitutionAdmin", user.institution_id))
-        if not allowed:
+        if current.id == user_id:
+            return user
+        accessible = await get_user_accessible_institution_ids(session, current.id)
+        if accessible is not None and (not accessible or (user.institution_id and user.institution_id not in accessible)):
             raise HTTPException(status_code=403, detail="Requires permission")
+        if not await caller_can_access_user(session, current.id, user.id, user.institution_id):
+            raise HTTPException(status_code=403, detail="Cannot access users with higher roles")
         return user
 
 
 @router.put("/users/{user_id}", response_model=User)
 async def update_user(user_id: int, payload: UserUpdatePayload, authorization: Optional[str] = Header(None)):
     current = await get_current_user(authorization)
+    if user_id == current.id and (
+        payload.status is not None or payload.institution_id is not None or payload.is_active is not None
+    ):
+        raise HTTPException(status_code=403, detail="Cannot modify your own status, institution, or active state")
     async with async_session() as session:
         q = select(User).where(User.id == user_id)
         res = await session.execute(q)
         user = res.scalars().first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        # allow SuperAdmin or InstitutionAdmin for the user's institution
-        allowed = await user_has_role(session, current.id, "SuperAdmin") or (user.institution_id and await user_has_role(session, current.id, "InstitutionAdmin", user.institution_id))
-        if not allowed:
-            raise HTTPException(status_code=403, detail="Requires InstitutionAdmin or SuperAdmin")
+        accessible = await get_user_accessible_institution_ids(session, current.id)
+        if accessible is not None and (not accessible or (user.institution_id and user.institution_id not in accessible)):
+            raise HTTPException(status_code=403, detail="Requires admin role for institution")
+        if not await caller_can_access_user(session, current.id, user.id, user.institution_id):
+            raise HTTPException(status_code=403, detail="Cannot modify users with higher roles")
         if payload.full_name is not None:
             user.full_name = payload.full_name
         if payload.institution_id is not None:
@@ -807,15 +1046,19 @@ async def update_user(user_id: int, payload: UserUpdatePayload, authorization: O
 @router.post("/users/{user_id}/suspend")
 async def suspend_user(user_id: int, authorization: Optional[str] = Header(None)):
     current = await get_current_user(authorization)
+    if user_id == current.id:
+        raise HTTPException(status_code=403, detail="Cannot suspend yourself")
     async with async_session() as session:
         q = select(User).where(User.id == user_id)
         res = await session.execute(q)
         user = res.scalars().first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        allowed = await user_has_role(session, current.id, "SuperAdmin") or (user.institution_id and await user_has_role(session, current.id, "InstitutionAdmin", user.institution_id))
-        if not allowed:
-            raise HTTPException(status_code=403, detail="Requires InstitutionAdmin or SuperAdmin")
+        accessible = await get_user_accessible_institution_ids(session, current.id)
+        if accessible is not None and (not accessible or (user.institution_id and user.institution_id not in accessible)):
+            raise HTTPException(status_code=403, detail="Requires admin role for institution")
+        if not await caller_can_access_user(session, current.id, user.id, user.institution_id):
+            raise HTTPException(status_code=403, detail="Cannot modify users with higher roles")
         user.status = "suspended"
         user.is_active = False
         session.add(user)
@@ -827,6 +1070,8 @@ async def suspend_user(user_id: int, authorization: Optional[str] = Header(None)
 @router.delete("/users/{user_id}")
 async def delete_user(user_id: int, authorization: Optional[str] = Header(None)):
     current = await get_current_user(authorization)
+    if user_id == current.id:
+        raise HTTPException(status_code=403, detail="Cannot delete yourself")
     async with async_session() as session:
         # only SuperAdmin may delete users
         allowed = await user_has_role(session, current.id, "SuperAdmin")

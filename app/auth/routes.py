@@ -4,34 +4,21 @@ from sqlmodel import select
 from app.db import async_session, init_db
 from app.models.user import User
 from app.models.content import Department
-from app.schemas.auth import UserCreate, UserRead, Token, LoginPayload, UserProfile
+from app.schemas.auth import UserCreate, UserRead, Token, LoginPayload, UserProfile, RoleAssignmentRead
 from app.models.role import Role, RoleAssignment
-from app.models.role import Role, RoleAssignment
-from passlib.context import CryptContext
+from app.auth.password import hash_password, verify_password
 from jose import jwt
 from typing import Optional
 from app.config import settings
-from typing import Optional
 from app.schemas.auth import UserRead
 from fastapi import Header
 from app.admin.routes import get_current_user
 
 router = APIRouter()
 
-# Prefer sha256_crypt to avoid system bcrypt binary/version issues in some environments.
-# If bcrypt is available and desired, it can remain in the list as a fallback.
-pwd_context = CryptContext(schemes=["sha256_crypt", "bcrypt"], deprecated="auto")
 JWT_SECRET = settings.JWT_SECRET
 JWT_ALGORITHM = settings.JWT_ALGORITHM
 ACCESS_TOKEN_EXPIRE_SECONDS = settings.ACCESS_TOKEN_EXPIRE_SECONDS
-
-
-def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
-
-
-def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
 
 
 async def get_user_by_email(db: AsyncSession, email: str) -> Optional[User]:
@@ -85,7 +72,7 @@ async def signup(user_in: UserCreate):
             if user_in.institution_id is not None and dept.institution_id != user_in.institution_id:
                 raise HTTPException(status_code=400, detail="Department does not belong to selected institution")
         user = await create_user(session, user_in)
-        return UserRead.from_orm(user)
+        return UserRead.model_validate(user)
 
 
 @router.post("/login", response_model=Token, tags=["auth"])
@@ -108,16 +95,24 @@ async def login(form_data: LoginPayload):
 @router.get("/me", response_model=UserProfile, tags=["auth"])
 async def me(authorization: Optional[str] = Header(None)):
     """
-    Return authenticated user's profile.
+    Return authenticated user's profile including role assignments for RBAC.
     """
     user = await get_current_user(authorization)
-    # fetch role names for this user
     async with async_session() as session:
-        q = select(Role.name).join(RoleAssignment, RoleAssignment.role_id == Role.id).where(RoleAssignment.user_id == user.id)
+        q = (
+            select(Role.name, RoleAssignment.institution_id)
+            .join(RoleAssignment, RoleAssignment.role_id == Role.id)
+            .where(RoleAssignment.user_id == user.id)
+        )
         res = await session.execute(q)
-        role_names = [r[0] for r in res.all()]
-    base = UserRead.from_orm(user).model_dump()
+        rows = res.all()
+        role_names = [r[0] for r in rows]
+        role_assignments = [
+            RoleAssignmentRead(role_name=r[0], institution_id=r[1]) for r in rows
+        ]
+    base = UserRead.model_validate(user).model_dump()
     base["roles"] = role_names
+    base["role_assignments"] = role_assignments
     return base
 
 

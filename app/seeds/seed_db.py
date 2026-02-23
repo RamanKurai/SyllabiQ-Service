@@ -10,7 +10,7 @@ from app.models.user import User
 from app.models.content import Department, Course, Subject, Syllabus, Topic
 from app.models.role import Role, RoleAssignment
 from app.models.institution import Institution
-from app.auth.routes import hash_password
+from app.auth.password import hash_password
 from sqlmodel import select
 
 
