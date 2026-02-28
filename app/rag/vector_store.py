@@ -1,5 +1,5 @@
 """
-ChromaDB vector store with OpenAI embeddings.
+ChromaDB vector store with OpenAI or Ollama embeddings (configurable via EMBEDDING_PROVIDER / LLM_PROVIDER).
 """
 from typing import List, Dict, Any, Optional
 
@@ -14,23 +14,27 @@ def _get_embedding_fn():
     global _embedding_fn
     if _embedding_fn is not None:
         return _embedding_fn
+    provider = settings.embedding_provider
+    if provider == "ollama":
+        try:
+            from langchain_ollama import OllamaEmbeddings
+            _embedding_fn = OllamaEmbeddings(
+                model=settings.OLLAMA_EMBEDDING_MODEL,
+                base_url=settings.OLLAMA_BASE_URL,
+            )
+        except ImportError:
+            _embedding_fn = None
+        return _embedding_fn
     if not settings.OPENAI_API_KEY:
         return None
     try:
         from langchain_openai import OpenAIEmbeddings
         _embedding_fn = OpenAIEmbeddings(
-            model="text-embedding-3-small",
+            model=settings.OPENAI_EMBEDDING_MODEL,
             openai_api_key=settings.OPENAI_API_KEY,
         )
     except ImportError:
-        try:
-            from langchain.embeddings import OpenAIEmbeddings
-            _embedding_fn = OpenAIEmbeddings(
-                model="text-embedding-3-small",
-                openai_api_key=settings.OPENAI_API_KEY,
-            )
-        except ImportError:
-            _embedding_fn = None
+        _embedding_fn = None
     return _embedding_fn
 
 
@@ -63,7 +67,7 @@ def get_collection():
 
 
 def embed_texts(texts: List[str]) -> List[List[float]]:
-    """Embed texts using OpenAI. Returns empty if not configured."""
+    """Embed texts using configured provider (OpenAI or Ollama). Returns empty if not configured."""
     fn = _get_embedding_fn()
     if not fn:
         return []

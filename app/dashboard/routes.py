@@ -57,12 +57,25 @@ async def my_dashboard(authorization: Optional[str] = Header(None)):
             if sub_obj:
                 current_subject_name = sub_obj.subject_name
 
+        # Resolve last_topic UUID → topic name for display
+        last_topic_display = None
+        if recent_ctx and recent_ctx.last_topic:
+            try:
+                import uuid as _uuid
+                tp_uuid = _uuid.UUID(recent_ctx.last_topic)
+                q_topic = select(Topic).where(Topic.topic_id == tp_uuid)
+                r_topic = await session.execute(q_topic)
+                tp_obj = r_topic.scalars().first()
+                last_topic_display = tp_obj.topic_name if tp_obj else recent_ctx.last_topic
+            except Exception:
+                last_topic_display = recent_ctx.last_topic
+
         activity = {
             "total_contexts": int(total_contexts),
             "last_active": (last_active.isoformat() if last_active else None),
             "current_subject_id": str(recent_ctx.subject_id) if recent_ctx and recent_ctx.subject_id else None,
             "current_subject_name": current_subject_name,
-            "last_topic": recent_ctx.last_topic if recent_ctx else None,
+            "last_topic": last_topic_display,
             "last_intent": recent_ctx.last_intent if recent_ctx else None,
         }
 
@@ -149,8 +162,20 @@ async def my_dashboard(authorization: Optional[str] = Header(None)):
         recent_activity = []
         for row in res.all():
             uc, subj_name = row
+            # Resolve topic UUID → name
+            topic_display = uc.last_topic
+            if uc.last_topic:
+                try:
+                    import uuid as _uuid
+                    tp_uuid = _uuid.UUID(uc.last_topic)
+                    r_tp = await session.execute(select(Topic).where(Topic.topic_id == tp_uuid))
+                    tp_obj = r_tp.scalars().first()
+                    if tp_obj:
+                        topic_display = tp_obj.topic_name
+                except Exception:
+                    pass
             recent_activity.append({
-                "last_topic": uc.last_topic,
+                "last_topic": topic_display,
                 "last_intent": uc.last_intent,
                 "subject_name": subj_name,
                 "updated_at": uc.updated_at.isoformat() if uc.updated_at else None,

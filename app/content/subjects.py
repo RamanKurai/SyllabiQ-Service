@@ -4,7 +4,8 @@ import uuid
 from sqlmodel import select
 
 from app.db import async_session
-from app.models.content import Subject
+from app.models.content import Subject, Syllabus, Topic
+from app.schemas import SubjectListItem, TopicListItem
 from sqlmodel import SQLModel
 
 router = APIRouter(tags=["content: subjects"])
@@ -75,4 +76,23 @@ async def delete_subject(subject_id: uuid.UUID):
         await session.delete(subject)
         await session.commit()
         return {"deleted": True}
+
+
+@router.get("/subjects/{subject_id}/topics", response_model=List[TopicListItem])
+async def list_topics_for_subject(subject_id: uuid.UUID):
+    """Return all topics across every syllabus unit belonging to this subject."""
+    async with async_session() as session:
+        q = select(Subject).where(Subject.subject_id == subject_id)
+        res = await session.execute(q)
+        if not res.scalars().first():
+            raise HTTPException(status_code=404, detail="Subject not found")
+
+        q = (
+            select(Topic)
+            .join(Syllabus, Topic.syllabus_id == Syllabus.syllabus_id)
+            .where(Syllabus.subject_id == subject_id)
+        )
+        res = await session.execute(q)
+        topics = res.scalars().all()
+        return [TopicListItem(id=str(t.topic_id), name=t.topic_name) for t in topics]
 

@@ -4,7 +4,8 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, Header
 from sqlmodel import select
-from sqlalchemy import func
+from sqlalchemy import func, delete
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from jose import jwt
 
@@ -13,7 +14,8 @@ from app.config import settings
 from app.models.institution import Institution
 from app.models.role import Role, RoleAssignment
 from app.models.user import User, UserStatus
-from app.models.content import Department, Course, Subject, Syllabus, Topic
+from app.models.content import Department, Course, Subject, Syllabus, Topic, TopicContent, UserContext
+from app.models.visits import TopicVisit
 from app.models.audit import AuditLog
 from app.auth.password import hash_password
 from pydantic import BaseModel
@@ -291,9 +293,16 @@ async def delete_institution(institution_id: int, authorization: Optional[str] =
         inst = res.scalars().first()
         if not inst:
             raise HTTPException(status_code=404, detail="Institution not found")
-        await session.delete(inst)
-        await _log_audit(session, current.id, "delete_institution", "Institution", inst.id)
-        await session.commit()
+        try:
+            await session.delete(inst)
+            await _log_audit(session, current.id, "delete_institution", "Institution", inst.id)
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot delete institution: it has users, departments, or role assignments. Remove or reassign them first.",
+            )
         return {"deleted": True}
 
 
@@ -393,6 +402,178 @@ async def get_kpis(days: int = 7, authorization: Optional[str] = Header(None)):
         series = [series_map[(date.today() - timedelta(days=(days - 1 - i))).isoformat()] for i in range(days)]
         return {"counts": counts, "series": series}
 
+@router.get("/ai-kpis")
+async def get_ai_kpis(days: int = 14, authorization: Optional[str] = Header(None)):
+    """
+    Return AI usage KPIs: query volume, intent distribution, LLM provider usage,
+    daily trends, and top subjects by query count.
+    SuperAdmin: global view. InstitutionAdmin/Principal/Teacher: scoped to their institution(s).
+    """
+    current = await get_current_user(authorization)
+    async with async_session() as session:
+        accessible = await get_user_accessible_institution_ids(session, current.id)
+        if accessible is not None and len(accessible) == 0:
+            raise HTTPException(status_code=403, detail="No institution access")
+
+        from app.models.query_log import QueryLog
+        from app.models.content import Subject
+
+        cutoff = datetime.utcnow() - timedelta(days=days)
+
+        # When institution-scoped, restrict to queries from users in accessible institutions
+        inst_subq = None
+        if accessible:
+            inst_subq = (
+                select(User.id)
+                .where(User.institution_id.in_(accessible))
+                .scalar_subquery()
+            )
+
+        def filters(extra: Optional[list] = None) -> list:
+            """Build WHERE conditions: time window + optional institution scope + extras."""
+            conds = [QueryLog.created_at >= cutoff]
+            if inst_subq is not None:
+                conds.append(QueryLog.user_id.in_(inst_subq))
+            if extra:
+                conds.extend(extra)
+            return conds
+
+        # --- Summary stats ---
+        res = await session.execute(
+            select(func.count()).select_from(QueryLog).where(*filters())
+        )
+        total = int(res.scalar_one() or 0)
+
+        res = await session.execute(
+            select(func.count()).select_from(QueryLog).where(*filters([QueryLog.success == True]))
+        )
+        success_count = int(res.scalar_one() or 0)
+        success_rate = round((success_count / total * 100) if total > 0 else 0.0, 1)
+
+        res = await session.execute(
+            select(func.avg(QueryLog.response_time_ms)).select_from(QueryLog).where(*filters())
+        )
+        avg_rt = round(float(res.scalar_one() or 0), 1)
+
+        res = await session.execute(
+            select(func.avg(QueryLog.chunks_retrieved)).select_from(QueryLog).where(*filters())
+        )
+        avg_chunks = round(float(res.scalar_one() or 0), 1)
+
+        # --- RAG / context usage breakdown ---
+        res = await session.execute(
+            select(func.count()).select_from(QueryLog).where(*filters([QueryLog.chunks_retrieved > 0]))
+        )
+        rag_grounded = int(res.scalar_one() or 0)
+
+        res = await session.execute(
+            select(func.avg(QueryLog.chunks_retrieved)).select_from(QueryLog)
+            .where(*filters([QueryLog.chunks_retrieved > 0]))
+        )
+        avg_chunks_when_hit = round(float(res.scalar_one() or 0), 1)
+
+        no_context = total - rag_grounded
+        usage_breakdown = {
+            "rag_grounded_count": rag_grounded,
+            "rag_grounded_pct": round((rag_grounded / total * 100) if total > 0 else 0.0, 1),
+            "no_context_count": no_context,
+            "no_context_pct": round((no_context / total * 100) if total > 0 else 0.0, 1),
+            "avg_chunks_when_retrieved": avg_chunks_when_hit,
+        }
+
+        # --- Intent breakdown (with percentages) ---
+        res = await session.execute(
+            select(QueryLog.intent, func.count().label("cnt"))
+            .where(*filters())
+            .group_by(QueryLog.intent)
+            .order_by(func.count().desc())
+        )
+        intent_breakdown = [
+            {
+                "intent": row[0],
+                "count": int(row[1]),
+                "pct": round((int(row[1]) / total * 100) if total > 0 else 0.0, 1),
+            }
+            for row in res.all()
+        ]
+
+        # --- LLM provider breakdown ---
+        res = await session.execute(
+            select(QueryLog.llm_provider, func.count().label("cnt"))
+            .where(*filters())
+            .group_by(QueryLog.llm_provider)
+        )
+        provider_breakdown = [{"provider": row[0], "count": int(row[1])} for row in res.all()]
+
+        # --- Daily query series ---
+        series_map: dict[str, dict] = {}
+        for i in range(days):
+            d = (date.today() - timedelta(days=(days - 1 - i))).isoformat()
+            series_map[d] = {"date": d, "total": 0, "success": 0}
+
+        res = await session.execute(
+            select(func.date(QueryLog.created_at).label("day"), func.count().label("cnt"))
+            .where(*filters())
+            .group_by(func.date(QueryLog.created_at))
+        )
+        for row in res.all():
+            day = row[0] if isinstance(row[0], str) else row[0].isoformat()
+            series_map.setdefault(day, {"date": day, "total": 0, "success": 0})
+            series_map[day]["total"] = int(row[1])
+
+        res = await session.execute(
+            select(func.date(QueryLog.created_at).label("day"), func.count().label("cnt"))
+            .where(*filters([QueryLog.success == True]))
+            .group_by(func.date(QueryLog.created_at))
+        )
+        for row in res.all():
+            day = row[0] if isinstance(row[0], str) else row[0].isoformat()
+            series_map.setdefault(day, {"date": day, "total": 0, "success": 0})
+            series_map[day]["success"] = int(row[1])
+
+        daily_queries = [
+            series_map[(date.today() - timedelta(days=(days - 1 - i))).isoformat()]
+            for i in range(days)
+        ]
+
+        # --- Top subjects ---
+        res = await session.execute(
+            select(QueryLog.subject_id, func.count().label("cnt"))
+            .where(*filters([QueryLog.subject_id.isnot(None)]))
+            .group_by(QueryLog.subject_id)
+            .order_by(func.count().desc())
+            .limit(5)
+        )
+        top_subjects = []
+        for row in res.all():
+            sid_str, count = row[0], int(row[1])
+            name = sid_str
+            try:
+                s_res = await session.execute(
+                    select(Subject).where(Subject.subject_id == uuid.UUID(sid_str))
+                )
+                s = s_res.scalars().first()
+                if s:
+                    name = s.subject_name
+            except Exception:
+                pass
+            top_subjects.append({"subject_id": sid_str, "subject_name": name, "count": count})
+
+        return {
+            "summary": {
+                "total_queries": total,
+                "success_rate": success_rate,
+                "avg_response_time_ms": avg_rt,
+                "avg_chunks_retrieved": avg_chunks,
+            },
+            "usage_breakdown": usage_breakdown,
+            "intent_breakdown": intent_breakdown,
+            "provider_breakdown": provider_breakdown,
+            "daily_queries": daily_queries,
+            "top_subjects": top_subjects,
+        }
+
+
 class RoleCreate(BaseModel):
     name: str
     description: Optional[str] = None
@@ -466,9 +647,17 @@ async def delete_role(role_id: int, authorization: Optional[str] = Header(None))
         role = res.scalars().first()
         if not role:
             raise HTTPException(status_code=404, detail="Role not found")
-        await session.delete(role)
-        await _log_audit(session, current.id, "delete_role", "Role", role.id)
-        await session.commit()
+        await session.execute(delete(RoleAssignment).where(RoleAssignment.role_id == role_id))
+        try:
+            await session.delete(role)
+            await _log_audit(session, current.id, "delete_role", "Role", role.id)
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot delete role: still in use. Remove all role assignments first.",
+            )
         return {"deleted": True}
 # -----------------------
 # Admin-protected content CRUD (require SuperAdmin)
@@ -538,9 +727,16 @@ async def admin_delete_department(department_id: uuid.UUID, authorization: Optio
         dept = res.scalars().first()
         if not dept:
             raise HTTPException(status_code=404, detail="Department not found")
-        await session.delete(dept)
-        await _log_audit(session, current.id, "delete", "Department", department_id)
-        await session.commit()
+        try:
+            await session.delete(dept)
+            await _log_audit(session, current.id, "delete", "Department", department_id)
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot delete department: it has courses or users. Remove or reassign them first.",
+            )
         return {"deleted": True}
 
 
@@ -599,9 +795,16 @@ async def admin_delete_course(course_id: uuid.UUID, authorization: Optional[str]
         course = res.scalars().first()
         if not course:
             raise HTTPException(status_code=404, detail="Course not found")
-        await session.delete(course)
-        await _log_audit(session, current.id, "delete", "Course", course.course_id)
-        await session.commit()
+        try:
+            await session.delete(course)
+            await _log_audit(session, current.id, "delete", "Course", course.course_id)
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot delete course: it has subjects. Remove them first.",
+            )
         return {"deleted": True}
 
 
@@ -660,9 +863,16 @@ async def admin_delete_subject(subject_id: uuid.UUID, authorization: Optional[st
         subject = res.scalars().first()
         if not subject:
             raise HTTPException(status_code=404, detail="Subject not found")
-        await session.delete(subject)
-        await _log_audit(session, current.id, "delete", "Subject", subject.subject_id)
-        await session.commit()
+        try:
+            await session.delete(subject)
+            await _log_audit(session, current.id, "delete", "Subject", subject.subject_id)
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot delete subject: it has syllabi, user contexts, or topic visits. Remove them first.",
+            )
         return {"deleted": True}
 
 
@@ -721,9 +931,16 @@ async def admin_delete_syllabus(syllabus_id: uuid.UUID, authorization: Optional[
         syl = res.scalars().first()
         if not syl:
             raise HTTPException(status_code=404, detail="Syllabus not found")
-        await session.delete(syl)
-        await _log_audit(session, current.id, "delete", "Syllabus", syl.syllabus_id)
-        await session.commit()
+        try:
+            await session.delete(syl)
+            await _log_audit(session, current.id, "delete", "Syllabus", syl.syllabus_id)
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot delete syllabus: it has topics. Remove them first.",
+            )
         return {"deleted": True}
 
 
@@ -782,9 +999,18 @@ async def admin_delete_topic(topic_id: uuid.UUID, authorization: Optional[str] =
         t = res.scalars().first()
         if not t:
             raise HTTPException(status_code=404, detail="Topic not found")
-        await session.delete(t)
-        await _log_audit(session, current.id, "delete", "Topic", t.topic_id)
-        await session.commit()
+        await session.execute(delete(TopicContent).where(TopicContent.topic_id == topic_id))
+        await session.execute(delete(TopicVisit).where(TopicVisit.topic_id == topic_id))
+        try:
+            await session.delete(t)
+            await _log_audit(session, current.id, "delete", "Topic", t.topic_id)
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot delete topic: still referenced. Remove dependent data first.",
+            )
         return {"deleted": True}
 
 
@@ -1073,7 +1299,6 @@ async def delete_user(user_id: int, authorization: Optional[str] = Header(None))
     if user_id == current.id:
         raise HTTPException(status_code=403, detail="Cannot delete yourself")
     async with async_session() as session:
-        # only SuperAdmin may delete users
         allowed = await user_has_role(session, current.id, "SuperAdmin")
         if not allowed:
             raise HTTPException(status_code=403, detail="Requires SuperAdmin")
@@ -1082,8 +1307,18 @@ async def delete_user(user_id: int, authorization: Optional[str] = Header(None))
         user = res.scalars().first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        await session.delete(user)
-        await _log_audit(session, current.id, "delete_user", "User", user.id)
-        await session.commit()
+        await session.execute(delete(RoleAssignment).where(RoleAssignment.user_id == user_id))
+        await session.execute(delete(UserContext).where(UserContext.user_id == user_id))
+        await session.execute(delete(TopicVisit).where(TopicVisit.user_id == user_id))
+        try:
+            await session.delete(user)
+            await _log_audit(session, current.id, "delete_user", "User", user.id)
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot delete user: still referenced (e.g. audit log). Contact support.",
+            )
         return {"deleted": True}
 

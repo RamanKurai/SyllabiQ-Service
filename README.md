@@ -72,8 +72,8 @@ This improves reliability and explainability.
 | Language | Python |
 | AI Orchestration | LangChain |
 | Vector Store | ChromaDB (persistent) |
-| Embeddings | OpenAI text-embedding-3-small |
-| LLM | OpenAI GPT-4o-mini |
+| Embeddings | Model set in env: `OPENAI_EMBEDDING_MODEL` or `OLLAMA_EMBEDDING_MODEL` (quick config) |
+| LLM | Model set in env: `OPENAI_MODEL` or `OLLAMA_MODEL`; provider via `LLM_PROVIDER` |
 | Document Parsing | PyPDF2, python-docx |
 | Frontend (external) | React + Vite |
 
@@ -118,7 +118,7 @@ Final Response
 
 ### 3. Vector Knowledge Layer (RAG)
 - **ChromaDB** for persistent vector storage
-- **OpenAI embeddings** (text-embedding-3-small) for semantic search
+- **Embeddings**: Model name in env (`OPENAI_EMBEDDING_MODEL` or `OLLAMA_EMBEDDING_MODEL`); provider via `EMBEDDING_PROVIDER` / `LLM_PROVIDER`
 - Stores:
   - syllabus
   - unit-wise notes
@@ -423,9 +423,17 @@ For detailed frontend setup, see [SyllabiQ Frontend README](../SyllabiQ/README.m
 
 ## ⚙️ Configuration
 
-Set in `.env` (see `.env.example`):
+All configuration is via environment variables. Copy `.env.example` to `.env` and set values. **All model names are in env for quick config** — switch chat or embedding models without code changes.
 
-- `OPENAI_API_KEY` — Required for RAG (embeddings + generation)
+**RAG (LLM + embeddings):**
+
+- `LLM_PROVIDER` — `openai` (default) or `ollama`. Chooses the chat model for generation.
+- `EMBEDDING_PROVIDER` — Optional. `openai` or `ollama`; if unset, follows `LLM_PROVIDER`. Changing embedding provider may require re-indexing ChromaDB.
+- **OpenAI** (when provider is `openai`): `OPENAI_API_KEY` (required); `OPENAI_MODEL` (default: `gpt-4o-mini`); `OPENAI_EMBEDDING_MODEL` (default: `text-embedding-3-small`).
+- **Ollama** (when provider is `ollama`): `OLLAMA_BASE_URL` (default: `http://localhost:11434`), `OLLAMA_MODEL` (default: `llama3.2`), `OLLAMA_EMBEDDING_MODEL` (default: `nomic-embed-text`). Ensure Ollama is running locally or at the given URL.
+
+**Other:**
+
 - `CHROMA_PERSIST_DIR` — ChromaDB persistence directory (default: `./chroma_data`)
 - `UPLOAD_MAX_SIZE_MB` — Max file size for topic uploads (default: 10)
 

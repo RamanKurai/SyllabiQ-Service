@@ -16,7 +16,7 @@ def _chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[str
     if not text or not text.strip():
         return []
     try:
-        from langchain.text_splitter import RecursiveCharacterTextSplitter
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=overlap,

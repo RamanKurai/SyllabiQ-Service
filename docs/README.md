@@ -6,6 +6,7 @@ Files:
 - `ARCHITECTURE.md` — short architecture overview (includes RAG pipeline, content hierarchy)
 - `API.md` — API reference (auth, content, admin, upload endpoints)
 - `SCHEMA.md` — table & field summary (Department, TopicContent, updated User/Course)
+- `SOFT_DELETE.md` — design & implementation reference for soft delete (archive) and SuperAdmin permanent remove
 - `INTEGRATION.md` — frontend integration patterns
 - `ER_DIAGRAM.mmd` — Mermaid ER diagram
 - `SEQUENCE_DIAGRAMS.mmd` — Mermaid sequence diagrams for main flows

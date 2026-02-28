@@ -1,139 +1,219 @@
 # SyllabiQ Backend — API Reference
 
-Base URL (dev): http://localhost:8000
+**Base URL (dev):** `http://localhost:8000`
 
-Notes:
-- API routes are mounted under the `/api` prefix (e.g. `/api/v1/query`).
-- Health check is exposed at the application root `/health`.
-- Use the interactive OpenAPI docs at `/docs` when the app is running.
+**Interactive docs:** [http://localhost:8000/docs](http://localhost:8000/docs) (Swagger UI) — use **Authorize** with the JWT from `POST /api/auth/login` for protected endpoints.
 
-Endpoints
+---
 
-- GET /health
-  - Description: Service health check
-  - Response: { "status": "ok", "service": "syllabiq-backend" }
+## Table of contents
 
-- POST /api/v1/query
-  - Description: Main query endpoint. Orchestrates intent detection, retrieval, generation and validation.
-  - Request body (JSON):
-    - query: string (required)
-    - workflow: string (optional) - hint like "qa", "summarize", "generate"
-    - marks: integer (optional) - 2,5,10 to control answer length
-    - top_k: integer (optional) - how many retrieval chunks to fetch
-    - format: string (optional) - "bullets" | "paragraph"
-    - subject, topic: optional filters
-  - Response:
-    - answer: string
-    - citations: array of citation objects {id, source, text}
-    - metadata: object (intent, chunks_returned, etc)
+1. [Overview](#overview)
+2. [Authentication](#authentication)
+3. [Health](#health)
+4. [Auth](#auth)
+5. [Query & embeddings](#query--embeddings)
+6. [Content](#content)
+7. [Institutions (public)](#institutions-public)
+8. [Dashboard](#dashboard)
+9. [Admin APIs](#admin-apis) — *all admin endpoints in one place*
+10. [Workflows](#workflows)
 
-Auth (public)
-- POST /api/auth/signup
-  - Description: Create a new user. Frontend signup should POST here.
-  - Request body:
-    - email: string (required)
-    - password: string (required)
-    - full_name: string (optional)
-    - institution_id: integer (optional) — if the user belongs to an institution
-    - department_id: uuid (optional) — required when institution_id is set; binds student to department
-  - Behavior: creates a user with status `pending`. Institution admins / SuperAdmin must approve.
-  - Validation: department_id must belong to the selected institution. .edu email required for institution signups.
-  - Response: User object (see /schemas) with `status` field.
+---
 
-- POST /api/auth/login
-  - Description: Login with email + password. Returns a JWT access token.
-  - Request body: { email, password }
-  - Response: { access_token: "<jwt>", token_type: "bearer" }
-  - Usage: include header `Authorization: Bearer <token>` for protected admin endpoints.
+## Overview
 
-Admin / Management (requires Authorization: Bearer token)
-Notes: these endpoints are mounted under `/api/admin`. Authorization is enforced:
-- SuperAdmin: can create institutions, create global roles, assign global roles.
-- InstitutionAdmin (scoped): can manage users/assignments for their institution.
+- Routes are under the `/api` prefix (e.g. `/api/auth/login`, `/api/admin/...`).
+- Health check: `GET /health`.
+- Protected endpoints require header: `Authorization: Bearer <jwt>` (JWT from login).
 
-- POST /api/admin/institutions
-  - Create institution (SuperAdmin only)
-  - Body: { name, slug?, type? }
+---
 
-- GET /api/admin/institutions
-  - List institutions
+## Authentication
 
-- POST /api/admin/roles
-  - Create a canonical role (SuperAdmin only)
-  - Body: { name, description?, is_system?: bool }
+- **Public:** `POST /api/auth/signup`, `POST /api/auth/login` (no token).
+- **Protected:** All other auth, admin, dashboard, and some content endpoints require a valid JWT.
+- Use the token in the `Authorization` header: `Bearer <access_token>`.
 
-- GET /api/admin/roles
-  - List roles
+---
 
-Content (public read, auth for mutations)
-- GET /api/content/departments?institution_id={id}
-  - List departments (optionally filtered by institution). Used for signup department dropdown.
+## Health
 
-- GET /api/content/courses
-- GET /api/content/subjects
-- GET /api/content/syllabi
-- GET /api/content/topics
-  - List content entities.
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Service health check. Response: `{ "status": "ok", "service": "syllabiq-backend" }`. |
 
-- POST /api/content/topics/{topic_id}/upload (requires Authorization)
-  - Upload PDF, CSV, or DOCX file for a topic. Extracts text, stores in DB, indexes into ChromaDB for RAG.
-  - Request: multipart/form-data with `file` field.
-  - Response: TopicContent object.
+---
 
-- GET /api/content/topics/{topic_id}/content (requires Authorization)
-  - List uploaded content items for a topic.
+## Auth
 
-Admin / Management (requires Authorization: Bearer token)
-Notes: these endpoints are mounted under `/api/admin`. Authorization is enforced:
-- SuperAdmin: can create institutions, departments, content; create global roles; assign global roles.
-- InstitutionAdmin (scoped): can manage users/assignments for their institution.
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/auth/signup` | No | Create a new user. Body: `email`, `password`, `full_name?`, `institution_id?`, `department_id?`. User is created with status `pending`; .edu required for institution signups. |
+| POST | `/api/auth/login` | No | Login. Body: `{ "email", "password" }`. Returns `{ "access_token": "<jwt>", "token_type": "bearer", "roles": [...] }`. |
+| GET | `/api/auth/me` | Yes | Current user profile and role assignments. |
 
-- POST /api/admin/content/departments
-  - Create department (SuperAdmin only)
-  - Body: { name, institution_id?, slug? }
+---
 
-- PUT /api/admin/content/departments/{department_id}
-- DELETE /api/admin/content/departments/{department_id}
-  - Update/delete department.
+## Query & embeddings
 
-- POST /api/admin/content/courses
-  - Create course. Body: { course_name, description?, department_id? }
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/v1/query` | No | Main RAG query. Body: `query`, `workflow?`, `marks?`, `top_k?`, `format?`, `subject?`, `topic?`. Returns `answer`, `citations`, `metadata`. |
+| POST | `/api/v1/embed` | No | Batch embed texts. |
+| POST | `/api/v1/embed-query` | No | Embed a single query string. |
 
-- PUT /api/admin/content/courses/{course_id}
-  - Update course (includes department_id).
+---
 
-- POST /api/admin/role-assignments
-  - Assign a role to a user, optionally scoped to an institution.
-  - Body: { user_id, role_id, institution_id? }
-  - Permissions:
-    - assigning a global role (institution_id=null) requires SuperAdmin
-    - assigning a role scoped to an institution requires SuperAdmin or InstitutionAdmin for that institution
+## Content
 
-- GET /api/admin/users/pending?institution_id={id}
-  - List pending users (filtered by institution if provided). Requires InstitutionAdmin or SuperAdmin.
+**Read (public):** List departments, courses, subjects, syllabi, topics (e.g. `GET /api/content/departments?institution_id=...`, `GET /api/content/courses`, etc.).
 
-- POST /api/admin/users/{user_id}/approve
-  - Approve a pending user. Body: { assign_role_id? } to optionally assign a role on approval.
-  - Permissions: InstitutionAdmin for the user's institution or SuperAdmin.
+**Auth-required:**
 
-- POST /api/admin/users/{user_id}/deny
-  - Deny a pending user (sets status to `denied`).
-  - Permissions: InstitutionAdmin for the user's institution or SuperAdmin.
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/content/topics/{topic_id}/upload` | Upload PDF/CSV/DOCX for a topic (multipart `file`). Extracts text, indexes for RAG. |
+| GET | `/api/content/topics/{topic_id}/content` | List uploaded content items for a topic. |
 
-Seeding / demo data
-- On startup (dev) the app seeds a demo institution, a demo user and default roles if none exist.
-  - Demo user: `demo@syllabiq.local` / `password`
-  - Demo user is assigned the `SuperAdmin` role by the seed script.
+Content CRUD (create/update/delete) for departments, courses, subjects, syllabi, topics is under **Admin APIs** below.
 
-Signup → Approval workflow
-- Frontend: POST /api/auth/signup with `institution_id` and `department_id` (required when institution selected). User is created in `pending` status.
-- InstitutionAdmin (or SuperAdmin) reviews pending users via `/api/admin/users/pending` and calls `/api/admin/users/{id}/approve` or `/deny`.
-- On approve, the approver can optionally assign a role (e.g. Student or Teacher) to the user scoped to that institution.
+---
 
-RAG pipeline
-- Topic content (PDF/CSV/DOCX) is uploaded via POST /api/content/topics/{topic_id}/upload.
-- Text is extracted, chunked, embedded (OpenAI), and stored in ChromaDB.
-- Query endpoint uses ChromaDB retrieval with optional subject/topic filters for scoped answers.
+## Institutions (public)
 
-See the live `/docs` for request/response schemas and try the endpoints interactively.
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/institutions/` | List institutions (e.g. for signup dropdown). |
 
+---
+
+## Dashboard
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/dashboard/me` | Yes | Aggregated dashboard for the current user (KPIs, context, activity). |
+
+---
+
+## Admin APIs
+
+All admin endpoints are under `/api/admin` and require **`Authorization: Bearer <token>`**. Role requirements (SuperAdmin, InstitutionAdmin, etc.) are noted per group.
+
+### Institutions
+
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| POST | `/api/admin/institutions` | SuperAdmin | Create institution. Body: `name`, `slug?`, `type?`, `institute_admin?`. |
+| GET | `/api/admin/institutions` | Any auth | List institutions (paginated: `limit`, `offset`). |
+| PUT | `/api/admin/institutions/{institution_id}` | SuperAdmin | Update institution. Body: `name?`, `slug?`, `type?`, `is_active?`. |
+| DELETE | `/api/admin/institutions/{institution_id}` | SuperAdmin | Delete institution. |
+
+### KPIs
+
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| GET | `/api/admin/kpis?days=7` | Admin (scoped) | Aggregated counts and time-series (signups, approvals). SuperAdmin: global; others: institution-scoped. |
+
+### Roles
+
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| POST | `/api/admin/roles` | SuperAdmin | Create role. Body: `name`, `description?`, `is_system?`. |
+| GET | `/api/admin/roles` | Any auth | List roles (paginated). |
+| PUT | `/api/admin/roles/{role_id}` | SuperAdmin | Update role. Body: `name?`, `description?`, `is_active?`. |
+| DELETE | `/api/admin/roles/{role_id}` | SuperAdmin | Delete role. |
+
+### Content — Departments
+
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| POST | `/api/admin/content/departments` | SuperAdmin | Create department. Body: `name`, `institution_id?`, `slug?`. |
+| PUT | `/api/admin/content/departments/{department_id}` | SuperAdmin | Update department. |
+| DELETE | `/api/admin/content/departments/{department_id}` | SuperAdmin | Delete department. |
+
+### Content — Courses
+
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| POST | `/api/admin/content/courses` | SuperAdmin | Create course. Body: `course_name`, `description?`, `department_id?`. |
+| PUT | `/api/admin/content/courses/{course_id}` | SuperAdmin | Update course. |
+| DELETE | `/api/admin/content/courses/{course_id}` | SuperAdmin | Delete course. |
+
+### Content — Subjects
+
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| POST | `/api/admin/content/subjects` | SuperAdmin | Create subject. Body: as per schema. |
+| PUT | `/api/admin/content/subjects/{subject_id}` | SuperAdmin | Update subject. |
+| DELETE | `/api/admin/content/subjects/{subject_id}` | SuperAdmin | Delete subject. |
+
+### Content — Syllabi
+
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| POST | `/api/admin/content/syllabi` | SuperAdmin | Create syllabus. Body: as per schema. |
+| PUT | `/api/admin/content/syllabi/{syllabus_id}` | SuperAdmin | Update syllabus. |
+| DELETE | `/api/admin/content/syllabi/{syllabus_id}` | SuperAdmin | Delete syllabus. |
+
+### Content — Topics
+
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| POST | `/api/admin/content/topics` | SuperAdmin | Create topic. Body: as per schema. |
+| PUT | `/api/admin/content/topics/{topic_id}` | SuperAdmin | Update topic. |
+| DELETE | `/api/admin/content/topics/{topic_id}` | SuperAdmin | Delete topic. |
+
+### Role assignments
+
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| POST | `/api/admin/role-assignments` | SuperAdmin / InstitutionAdmin | Assign role to user. Body: `user_id`, `role_id`, `institution_id?`. Global role (`institution_id` null): SuperAdmin only; scoped: SuperAdmin or InstitutionAdmin for that institution. |
+
+### Users — Pending & list
+
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| GET | `/api/admin/users/pending?institution_id=&limit=&offset=` | InstitutionAdmin / SuperAdmin | List pending users (optionally by institution). |
+| GET | `/api/admin/users?status=&institution_id=&role_name=&limit=&offset=` | Admin (scoped) | List users with filters and pagination. Principal/Teacher: institution-scoped. |
+
+### Users — Approve / deny
+
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| POST | `/api/admin/users/{user_id}/approve` | InstitutionAdmin / SuperAdmin | Approve pending user. Body: `assign_role_id?` to assign role on approval. |
+| POST | `/api/admin/users/{user_id}/deny` | InstitutionAdmin / SuperAdmin | Deny pending user (status → `denied`). |
+
+### Users — CRUD & lifecycle
+
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| GET | `/api/admin/users/{user_id}` | Admin (scoped) | Get user by ID. |
+| PUT | `/api/admin/users/{user_id}` | Admin (scoped) | Update user. Body: `full_name?`, `institution_id?`, `is_active?`, `status?`. Cannot change own status/institution/active. |
+| POST | `/api/admin/users/{user_id}/suspend` | Admin (scoped) | Suspend user (status → `suspended`, `is_active` → false). |
+| DELETE | `/api/admin/users/{user_id}` | SuperAdmin | Delete user. |
+
+---
+
+## Workflows
+
+### Signup → approval
+
+1. Frontend: `POST /api/auth/signup` with `institution_id` and `department_id` when applicable. User is created with status `pending`.
+2. InstitutionAdmin (or SuperAdmin) lists pending users: `GET /api/admin/users/pending?institution_id=...`.
+3. Approve: `POST /api/admin/users/{id}/approve` (optional `assign_role_id`). Deny: `POST /api/admin/users/{id}/deny`.
+
+### RAG pipeline
+
+- Topic content: upload via `POST /api/content/topics/{topic_id}/upload` (PDF/CSV/DOCX). Text is extracted, chunked, embedded, and stored in ChromaDB.
+- Queries: `POST /api/v1/query` uses retrieval + LLM; subject/topic filters and model config via env (see `.env.example`).
+
+### Demo data
+
+- On startup (dev), the app may seed a demo institution, default roles, and a demo user: `demo@syllabiq.local` / `password` (SuperAdmin).
+
+---
+
+For request/response schemas and to try endpoints with a token, use the live **[/docs](http://localhost:8000/docs)** (Swagger UI). All **Admin APIs** appear under the **admin** tag there.
+
+**Related:** [SOFT_DELETE.md](SOFT_DELETE.md) — design for soft delete (archive) and SuperAdmin-only permanent remove.
