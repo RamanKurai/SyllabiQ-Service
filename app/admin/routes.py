@@ -163,6 +163,21 @@ async def get_user_accessible_institution_ids(session: AsyncSession, user_id: in
     return list(dict.fromkeys(ids))  # unique, preserve order
 
 
+async def caller_can_manage_content(session: AsyncSession, caller_id: int, institution_id: Optional[int]) -> bool:
+    """
+    True if caller can perform content CRUD for the given institution.
+    SuperAdmin: all; InstitutionAdmin (and lower admin roles): only assigned institution(s).
+    """
+    if await user_has_role(session, caller_id, "SuperAdmin"):
+        return True
+    accessible = await get_user_accessible_institution_ids(session, caller_id)
+    if accessible is None:
+        return True
+    if not accessible:
+        return False
+    return institution_id is not None and institution_id in accessible
+
+
 async def _log_audit(session: AsyncSession, user_id: Optional[int], action: str, entity: Optional[str] = None, entity_id: Optional[str] = None, details: Optional[dict] = None):
     try:
         al = AuditLog(user_id=user_id, action=action, entity=entity, entity_id=str(entity_id) if entity_id is not None else None, details=details)
@@ -660,7 +675,7 @@ async def delete_role(role_id: int, authorization: Optional[str] = Header(None))
             )
         return {"deleted": True}
 # -----------------------
-# Admin-protected content CRUD (require SuperAdmin)
+# Admin-protected content CRUD (SuperAdmin or InstitutionAdmin for assigned institutions)
 # -----------------------
 
 class DepartmentCreate(BaseModel):
@@ -679,9 +694,8 @@ class DepartmentUpdate(BaseModel):
 async def admin_create_department(payload: DepartmentCreate, authorization: Optional[str] = Header(None)):
     current = await get_current_user(authorization)
     async with async_session() as session:
-        allowed = await user_has_role(session, current.id, "SuperAdmin")
-        if not allowed:
-            raise HTTPException(status_code=403, detail="Requires SuperAdmin")
+        if not await caller_can_manage_content(session, current.id, payload.institution_id):
+            raise HTTPException(status_code=403, detail="Requires SuperAdmin or InstitutionAdmin for the institution")
         dept = Department(institution_id=payload.institution_id, name=payload.name, slug=payload.slug)
         session.add(dept)
         await _log_audit(session, current.id, "create", "Department", None, {"name": payload.name})
@@ -694,14 +708,15 @@ async def admin_create_department(payload: DepartmentCreate, authorization: Opti
 async def admin_update_department(department_id: uuid.UUID, payload: DepartmentUpdate, authorization: Optional[str] = Header(None)):
     current = await get_current_user(authorization)
     async with async_session() as session:
-        allowed = await user_has_role(session, current.id, "SuperAdmin")
-        if not allowed:
-            raise HTTPException(status_code=403, detail="Requires SuperAdmin")
         q = select(Department).where(Department.department_id == department_id)
         res = await session.execute(q)
         dept = res.scalars().first()
         if not dept:
             raise HTTPException(status_code=404, detail="Department not found")
+        if not await caller_can_manage_content(session, current.id, dept.institution_id):
+            raise HTTPException(status_code=403, detail="Requires SuperAdmin or InstitutionAdmin for the institution")
+        if payload.institution_id is not None and not await caller_can_manage_content(session, current.id, payload.institution_id):
+            raise HTTPException(status_code=403, detail="Requires SuperAdmin or InstitutionAdmin for the institution")
         if payload.institution_id is not None:
             dept.institution_id = payload.institution_id
         if payload.name is not None:
@@ -719,14 +734,13 @@ async def admin_update_department(department_id: uuid.UUID, payload: DepartmentU
 async def admin_delete_department(department_id: uuid.UUID, authorization: Optional[str] = Header(None)):
     current = await get_current_user(authorization)
     async with async_session() as session:
-        allowed = await user_has_role(session, current.id, "SuperAdmin")
-        if not allowed:
-            raise HTTPException(status_code=403, detail="Requires SuperAdmin")
         q = select(Department).where(Department.department_id == department_id)
         res = await session.execute(q)
         dept = res.scalars().first()
         if not dept:
             raise HTTPException(status_code=404, detail="Department not found")
+        if not await caller_can_manage_content(session, current.id, dept.institution_id):
+            raise HTTPException(status_code=403, detail="Requires SuperAdmin or InstitutionAdmin for the institution")
         try:
             await session.delete(dept)
             await _log_audit(session, current.id, "delete", "Department", department_id)
@@ -750,9 +764,14 @@ class CourseCreate(BaseModel):
 async def admin_create_course(payload: CourseCreate, authorization: Optional[str] = Header(None)):
     current = await get_current_user(authorization)
     async with async_session() as session:
-        allowed = await user_has_role(session, current.id, "SuperAdmin")
-        if not allowed:
-            raise HTTPException(status_code=403, detail="Requires SuperAdmin")
+        inst_id: Optional[int] = None
+        if payload.department_id is not None:
+            dept_res = await session.execute(select(Department).where(Department.department_id == payload.department_id))
+            dept = dept_res.scalars().first()
+            if dept:
+                inst_id = dept.institution_id
+        if not await caller_can_manage_content(session, current.id, inst_id):
+            raise HTTPException(status_code=403, detail="Requires SuperAdmin or InstitutionAdmin for the institution")
         course = Course(department_id=payload.department_id, course_name=payload.course_name, description=payload.description)
         session.add(course)
         await _log_audit(session, current.id, "create", "Course", None, {"course_name": payload.course_name})
@@ -765,14 +784,24 @@ async def admin_create_course(payload: CourseCreate, authorization: Optional[str
 async def admin_update_course(course_id: uuid.UUID, payload: CourseCreate, authorization: Optional[str] = Header(None)):
     current = await get_current_user(authorization)
     async with async_session() as session:
-        allowed = await user_has_role(session, current.id, "SuperAdmin")
-        if not allowed:
-            raise HTTPException(status_code=403, detail="Requires SuperAdmin")
         q = select(Course).where(Course.course_id == course_id)
         res = await session.execute(q)
         course = res.scalars().first()
         if not course:
             raise HTTPException(status_code=404, detail="Course not found")
+        inst_id: Optional[int] = None
+        if course.department_id is not None:
+            dept_res = await session.execute(select(Department).where(Department.department_id == course.department_id))
+            dept = dept_res.scalars().first()
+            if dept:
+                inst_id = dept.institution_id
+        if not await caller_can_manage_content(session, current.id, inst_id):
+            raise HTTPException(status_code=403, detail="Requires SuperAdmin or InstitutionAdmin for the institution")
+        if payload.department_id is not None:
+            dept_res = await session.execute(select(Department).where(Department.department_id == payload.department_id))
+            dept = dept_res.scalars().first()
+            if dept and not await caller_can_manage_content(session, current.id, dept.institution_id):
+                raise HTTPException(status_code=403, detail="Requires SuperAdmin or InstitutionAdmin for the institution")
         course.department_id = payload.department_id
         course.course_name = payload.course_name
         course.description = payload.description
@@ -787,14 +816,19 @@ async def admin_update_course(course_id: uuid.UUID, payload: CourseCreate, autho
 async def admin_delete_course(course_id: uuid.UUID, authorization: Optional[str] = Header(None)):
     current = await get_current_user(authorization)
     async with async_session() as session:
-        allowed = await user_has_role(session, current.id, "SuperAdmin")
-        if not allowed:
-            raise HTTPException(status_code=403, detail="Requires SuperAdmin")
         q = select(Course).where(Course.course_id == course_id)
         res = await session.execute(q)
         course = res.scalars().first()
         if not course:
             raise HTTPException(status_code=404, detail="Course not found")
+        inst_id: Optional[int] = None
+        if course.department_id is not None:
+            dept_res = await session.execute(select(Department).where(Department.department_id == course.department_id))
+            dept = dept_res.scalars().first()
+            if dept:
+                inst_id = dept.institution_id
+        if not await caller_can_manage_content(session, current.id, inst_id):
+            raise HTTPException(status_code=403, detail="Requires SuperAdmin or InstitutionAdmin for the institution")
         try:
             await session.delete(course)
             await _log_audit(session, current.id, "delete", "Course", course.course_id)
@@ -818,9 +852,16 @@ class SubjectCreate(BaseModel):
 async def admin_create_subject(payload: SubjectCreate, authorization: Optional[str] = Header(None)):
     current = await get_current_user(authorization)
     async with async_session() as session:
-        allowed = await user_has_role(session, current.id, "SuperAdmin")
-        if not allowed:
-            raise HTTPException(status_code=403, detail="Requires SuperAdmin")
+        inst_id: Optional[int] = None
+        course_res = await session.execute(select(Course).where(Course.course_id == payload.course_id))
+        course = course_res.scalars().first()
+        if course and course.department_id is not None:
+            dept_res = await session.execute(select(Department).where(Department.department_id == course.department_id))
+            dept = dept_res.scalars().first()
+            if dept:
+                inst_id = dept.institution_id
+        if not await caller_can_manage_content(session, current.id, inst_id):
+            raise HTTPException(status_code=403, detail="Requires SuperAdmin or InstitutionAdmin for the institution")
         subject = Subject(course_id=payload.course_id, subject_name=payload.subject_name, semester=payload.semester)
         session.add(subject)
         await _log_audit(session, current.id, "create", "Subject", None, {"subject_name": payload.subject_name})
@@ -833,14 +874,32 @@ async def admin_create_subject(payload: SubjectCreate, authorization: Optional[s
 async def admin_update_subject(subject_id: uuid.UUID, payload: SubjectCreate, authorization: Optional[str] = Header(None)):
     current = await get_current_user(authorization)
     async with async_session() as session:
-        allowed = await user_has_role(session, current.id, "SuperAdmin")
-        if not allowed:
-            raise HTTPException(status_code=403, detail="Requires SuperAdmin")
         q = select(Subject).where(Subject.subject_id == subject_id)
         res = await session.execute(q)
         subject = res.scalars().first()
         if not subject:
             raise HTTPException(status_code=404, detail="Subject not found")
+        inst_id: Optional[int] = None
+        course_res = await session.execute(select(Course).where(Course.course_id == subject.course_id))
+        course = course_res.scalars().first()
+        if course and course.department_id is not None:
+            dept_res = await session.execute(select(Department).where(Department.department_id == course.department_id))
+            dept = dept_res.scalars().first()
+            if dept:
+                inst_id = dept.institution_id
+        if not await caller_can_manage_content(session, current.id, inst_id):
+            raise HTTPException(status_code=403, detail="Requires SuperAdmin or InstitutionAdmin for the institution")
+        if payload.course_id != subject.course_id:
+            course_res2 = await session.execute(select(Course).where(Course.course_id == payload.course_id))
+            course2 = course_res2.scalars().first()
+            inst_id2: Optional[int] = None
+            if course2 and course2.department_id is not None:
+                dept_res2 = await session.execute(select(Department).where(Department.department_id == course2.department_id))
+                dept2 = dept_res2.scalars().first()
+                if dept2:
+                    inst_id2 = dept2.institution_id
+            if not await caller_can_manage_content(session, current.id, inst_id2):
+                raise HTTPException(status_code=403, detail="Requires SuperAdmin or InstitutionAdmin for the institution")
         subject.course_id = payload.course_id
         subject.subject_name = payload.subject_name
         subject.semester = payload.semester
@@ -855,14 +914,21 @@ async def admin_update_subject(subject_id: uuid.UUID, payload: SubjectCreate, au
 async def admin_delete_subject(subject_id: uuid.UUID, authorization: Optional[str] = Header(None)):
     current = await get_current_user(authorization)
     async with async_session() as session:
-        allowed = await user_has_role(session, current.id, "SuperAdmin")
-        if not allowed:
-            raise HTTPException(status_code=403, detail="Requires SuperAdmin")
         q = select(Subject).where(Subject.subject_id == subject_id)
         res = await session.execute(q)
         subject = res.scalars().first()
         if not subject:
             raise HTTPException(status_code=404, detail="Subject not found")
+        inst_id: Optional[int] = None
+        course_res = await session.execute(select(Course).where(Course.course_id == subject.course_id))
+        course = course_res.scalars().first()
+        if course and course.department_id is not None:
+            dept_res = await session.execute(select(Department).where(Department.department_id == course.department_id))
+            dept = dept_res.scalars().first()
+            if dept:
+                inst_id = dept.institution_id
+        if not await caller_can_manage_content(session, current.id, inst_id):
+            raise HTTPException(status_code=403, detail="Requires SuperAdmin or InstitutionAdmin for the institution")
         try:
             await session.delete(subject)
             await _log_audit(session, current.id, "delete", "Subject", subject.subject_id)
@@ -886,9 +952,19 @@ class SyllabusCreate(BaseModel):
 async def admin_create_syllabus(payload: SyllabusCreate, authorization: Optional[str] = Header(None)):
     current = await get_current_user(authorization)
     async with async_session() as session:
-        allowed = await user_has_role(session, current.id, "SuperAdmin")
-        if not allowed:
-            raise HTTPException(status_code=403, detail="Requires SuperAdmin")
+        inst_id: Optional[int] = None
+        subj_res = await session.execute(select(Subject).where(Subject.subject_id == payload.subject_id))
+        subj = subj_res.scalars().first()
+        if subj:
+            course_res = await session.execute(select(Course).where(Course.course_id == subj.course_id))
+            course = course_res.scalars().first()
+            if course and course.department_id is not None:
+                dept_res = await session.execute(select(Department).where(Department.department_id == course.department_id))
+                dept = dept_res.scalars().first()
+                if dept:
+                    inst_id = dept.institution_id
+        if not await caller_can_manage_content(session, current.id, inst_id):
+            raise HTTPException(status_code=403, detail="Requires SuperAdmin or InstitutionAdmin for the institution")
         syl = Syllabus(subject_id=payload.subject_id, unit_name=payload.unit_name, unit_order=payload.unit_order)
         session.add(syl)
         await _log_audit(session, current.id, "create", "Syllabus", None, {"unit_name": payload.unit_name})
@@ -901,14 +977,38 @@ async def admin_create_syllabus(payload: SyllabusCreate, authorization: Optional
 async def admin_update_syllabus(syllabus_id: uuid.UUID, payload: SyllabusCreate, authorization: Optional[str] = Header(None)):
     current = await get_current_user(authorization)
     async with async_session() as session:
-        allowed = await user_has_role(session, current.id, "SuperAdmin")
-        if not allowed:
-            raise HTTPException(status_code=403, detail="Requires SuperAdmin")
         q = select(Syllabus).where(Syllabus.syllabus_id == syllabus_id)
         res = await session.execute(q)
         syl = res.scalars().first()
         if not syl:
             raise HTTPException(status_code=404, detail="Syllabus not found")
+        inst_id: Optional[int] = None
+        subj_res = await session.execute(select(Subject).where(Subject.subject_id == syl.subject_id))
+        subj = subj_res.scalars().first()
+        if subj:
+            course_res = await session.execute(select(Course).where(Course.course_id == subj.course_id))
+            course = course_res.scalars().first()
+            if course and course.department_id is not None:
+                dept_res = await session.execute(select(Department).where(Department.department_id == course.department_id))
+                dept = dept_res.scalars().first()
+                if dept:
+                    inst_id = dept.institution_id
+        if not await caller_can_manage_content(session, current.id, inst_id):
+            raise HTTPException(status_code=403, detail="Requires SuperAdmin or InstitutionAdmin for the institution")
+        if payload.subject_id != syl.subject_id:
+            subj_res2 = await session.execute(select(Subject).where(Subject.subject_id == payload.subject_id))
+            subj2 = subj_res2.scalars().first()
+            inst_id2: Optional[int] = None
+            if subj2:
+                course_res2 = await session.execute(select(Course).where(Course.course_id == subj2.course_id))
+                course2 = course_res2.scalars().first()
+                if course2 and course2.department_id is not None:
+                    dept_res2 = await session.execute(select(Department).where(Department.department_id == course2.department_id))
+                    dept2 = dept_res2.scalars().first()
+                    if dept2:
+                        inst_id2 = dept2.institution_id
+                if not await caller_can_manage_content(session, current.id, inst_id2):
+                    raise HTTPException(status_code=403, detail="Requires SuperAdmin or InstitutionAdmin for the institution")
         syl.subject_id = payload.subject_id
         syl.unit_name = payload.unit_name
         syl.unit_order = payload.unit_order
@@ -923,14 +1023,24 @@ async def admin_update_syllabus(syllabus_id: uuid.UUID, payload: SyllabusCreate,
 async def admin_delete_syllabus(syllabus_id: uuid.UUID, authorization: Optional[str] = Header(None)):
     current = await get_current_user(authorization)
     async with async_session() as session:
-        allowed = await user_has_role(session, current.id, "SuperAdmin")
-        if not allowed:
-            raise HTTPException(status_code=403, detail="Requires SuperAdmin")
         q = select(Syllabus).where(Syllabus.syllabus_id == syllabus_id)
         res = await session.execute(q)
         syl = res.scalars().first()
         if not syl:
             raise HTTPException(status_code=404, detail="Syllabus not found")
+        inst_id: Optional[int] = None
+        subj_res = await session.execute(select(Subject).where(Subject.subject_id == syl.subject_id))
+        subj = subj_res.scalars().first()
+        if subj:
+            course_res = await session.execute(select(Course).where(Course.course_id == subj.course_id))
+            course = course_res.scalars().first()
+            if course and course.department_id is not None:
+                dept_res = await session.execute(select(Department).where(Department.department_id == course.department_id))
+                dept = dept_res.scalars().first()
+                if dept:
+                    inst_id = dept.institution_id
+        if not await caller_can_manage_content(session, current.id, inst_id):
+            raise HTTPException(status_code=403, detail="Requires SuperAdmin or InstitutionAdmin for the institution")
         try:
             await session.delete(syl)
             await _log_audit(session, current.id, "delete", "Syllabus", syl.syllabus_id)
@@ -954,9 +1064,22 @@ class TopicCreate(BaseModel):
 async def admin_create_topic(payload: TopicCreate, authorization: Optional[str] = Header(None)):
     current = await get_current_user(authorization)
     async with async_session() as session:
-        allowed = await user_has_role(session, current.id, "SuperAdmin")
-        if not allowed:
-            raise HTTPException(status_code=403, detail="Requires SuperAdmin")
+        inst_id: Optional[int] = None
+        syl_res = await session.execute(select(Syllabus).where(Syllabus.syllabus_id == payload.syllabus_id))
+        syl = syl_res.scalars().first()
+        if syl:
+            subj_res = await session.execute(select(Subject).where(Subject.subject_id == syl.subject_id))
+            subj = subj_res.scalars().first()
+            if subj:
+                course_res = await session.execute(select(Course).where(Course.course_id == subj.course_id))
+                course = course_res.scalars().first()
+                if course and course.department_id is not None:
+                    dept_res = await session.execute(select(Department).where(Department.department_id == course.department_id))
+                    dept = dept_res.scalars().first()
+                    if dept:
+                        inst_id = dept.institution_id
+        if not await caller_can_manage_content(session, current.id, inst_id):
+            raise HTTPException(status_code=403, detail="Requires SuperAdmin or InstitutionAdmin for the institution")
         t = Topic(syllabus_id=payload.syllabus_id, topic_name=payload.topic_name, description=payload.description)
         session.add(t)
         await _log_audit(session, current.id, "create", "Topic", None, {"topic_name": payload.topic_name})
@@ -969,14 +1092,44 @@ async def admin_create_topic(payload: TopicCreate, authorization: Optional[str] 
 async def admin_update_topic(topic_id: uuid.UUID, payload: TopicCreate, authorization: Optional[str] = Header(None)):
     current = await get_current_user(authorization)
     async with async_session() as session:
-        allowed = await user_has_role(session, current.id, "SuperAdmin")
-        if not allowed:
-            raise HTTPException(status_code=403, detail="Requires SuperAdmin")
         q = select(Topic).where(Topic.topic_id == topic_id)
         res = await session.execute(q)
         t = res.scalars().first()
         if not t:
             raise HTTPException(status_code=404, detail="Topic not found")
+        inst_id: Optional[int] = None
+        syl_res = await session.execute(select(Syllabus).where(Syllabus.syllabus_id == t.syllabus_id))
+        syl = syl_res.scalars().first()
+        if syl:
+            subj_res = await session.execute(select(Subject).where(Subject.subject_id == syl.subject_id))
+            subj = subj_res.scalars().first()
+            if subj:
+                course_res = await session.execute(select(Course).where(Course.course_id == subj.course_id))
+                course = course_res.scalars().first()
+                if course and course.department_id is not None:
+                    dept_res = await session.execute(select(Department).where(Department.department_id == course.department_id))
+                    dept = dept_res.scalars().first()
+                    if dept:
+                        inst_id = dept.institution_id
+        if not await caller_can_manage_content(session, current.id, inst_id):
+            raise HTTPException(status_code=403, detail="Requires SuperAdmin or InstitutionAdmin for the institution")
+        if payload.syllabus_id != t.syllabus_id:
+            syl_res2 = await session.execute(select(Syllabus).where(Syllabus.syllabus_id == payload.syllabus_id))
+            syl2 = syl_res2.scalars().first()
+            inst_id2: Optional[int] = None
+            if syl2:
+                subj_res2 = await session.execute(select(Subject).where(Subject.subject_id == syl2.subject_id))
+                subj2 = subj_res2.scalars().first()
+                if subj2:
+                    course_res2 = await session.execute(select(Course).where(Course.course_id == subj2.course_id))
+                    course2 = course_res2.scalars().first()
+                    if course2 and course2.department_id is not None:
+                        dept_res2 = await session.execute(select(Department).where(Department.department_id == course2.department_id))
+                        dept2 = dept_res2.scalars().first()
+                        if dept2:
+                            inst_id2 = dept2.institution_id
+                    if not await caller_can_manage_content(session, current.id, inst_id2):
+                        raise HTTPException(status_code=403, detail="Requires SuperAdmin or InstitutionAdmin for the institution")
         t.syllabus_id = payload.syllabus_id
         t.topic_name = payload.topic_name
         t.description = payload.description
@@ -991,14 +1144,27 @@ async def admin_update_topic(topic_id: uuid.UUID, payload: TopicCreate, authoriz
 async def admin_delete_topic(topic_id: uuid.UUID, authorization: Optional[str] = Header(None)):
     current = await get_current_user(authorization)
     async with async_session() as session:
-        allowed = await user_has_role(session, current.id, "SuperAdmin")
-        if not allowed:
-            raise HTTPException(status_code=403, detail="Requires SuperAdmin")
         q = select(Topic).where(Topic.topic_id == topic_id)
         res = await session.execute(q)
         t = res.scalars().first()
         if not t:
             raise HTTPException(status_code=404, detail="Topic not found")
+        inst_id: Optional[int] = None
+        syl_res = await session.execute(select(Syllabus).where(Syllabus.syllabus_id == t.syllabus_id))
+        syl = syl_res.scalars().first()
+        if syl:
+            subj_res = await session.execute(select(Subject).where(Subject.subject_id == syl.subject_id))
+            subj = subj_res.scalars().first()
+            if subj:
+                course_res = await session.execute(select(Course).where(Course.course_id == subj.course_id))
+                course = course_res.scalars().first()
+                if course and course.department_id is not None:
+                    dept_res = await session.execute(select(Department).where(Department.department_id == course.department_id))
+                    dept = dept_res.scalars().first()
+                    if dept:
+                        inst_id = dept.institution_id
+        if not await caller_can_manage_content(session, current.id, inst_id):
+            raise HTTPException(status_code=403, detail="Requires SuperAdmin or InstitutionAdmin for the institution")
         await session.execute(delete(TopicContent).where(TopicContent.topic_id == topic_id))
         await session.execute(delete(TopicVisit).where(TopicVisit.topic_id == topic_id))
         try:

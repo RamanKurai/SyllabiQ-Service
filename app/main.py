@@ -107,8 +107,34 @@ app.openapi = custom_openapi
 async def startup_event():
     # Initialize DB and any other resources (vector stores, embeddings) here.
     # If configured, ensure Postgres DB exists before initializing SQLModel metadata.
-    await ensure_postgres_db_exists()
-    await init_db()
+    try:
+        await ensure_postgres_db_exists()
+        await init_db()
+    except (ConnectionRefusedError, OSError) as e:
+        if getattr(e, "errno", None) == 61 or "Connection refused" in str(e):
+            import sys
+            print(
+                "\n[startup] Database connection refused. Is PostgreSQL running?\n"
+                "  • To use Postgres: start PostgreSQL (e.g. brew services start postgresql, or Docker).\n"
+                "  • To run without Postgres: set in .env:\n"
+                "      DATABASE_URL=sqlite+aiosqlite:///./dev.db\n"
+                "      AUTO_CREATE_DB=false\n",
+                file=sys.stderr,
+            )
+        raise
+    except Exception as e:
+        err_msg = str(e).lower()
+        if "role" in err_msg and "does not exist" in err_msg:
+            import sys
+            print(
+                "\n[startup] Database role or database not found (Postgres not set up for this app).\n"
+                "  • Easiest: use SQLite. In .env set:\n"
+                "      DATABASE_URL=sqlite+aiosqlite:///./dev.db\n"
+                "      AUTO_CREATE_DB=false\n"
+                "  • Or create the Postgres role and DB, or set DATABASE_SUPERUSER_URL to a user that can create them (e.g. your macOS username on Homebrew Postgres).\n",
+                file=sys.stderr,
+            )
+        raise
     # Seed default/demo data if not already present
     try:
         await seed_db(create_dummy_user=True, seed_content=True)

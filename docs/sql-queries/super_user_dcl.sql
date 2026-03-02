@@ -1,0 +1,3 @@
+CREATE ROLE "postgres" WITH LOGIN PASSWORD 'postgres';
+
+ALTER ROLE "postgres" SUPERUSER;

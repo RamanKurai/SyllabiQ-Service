@@ -128,41 +128,41 @@ All admin endpoints are under `/api/admin` and require **`Authorization: Bearer 
 
 | Method | Path | Role | Description |
 |--------|------|------|-------------|
-| POST | `/api/admin/content/departments` | SuperAdmin | Create department. Body: `name`, `institution_id?`, `slug?`. |
-| PUT | `/api/admin/content/departments/{department_id}` | SuperAdmin | Update department. |
-| DELETE | `/api/admin/content/departments/{department_id}` | SuperAdmin | Delete department. |
+| POST | `/api/admin/content/departments` | SuperAdmin, InstitutionAdmin (assigned institutions) | Create department. Body: `name`, `institution_id?`, `slug?`. |
+| PUT | `/api/admin/content/departments/{department_id}` | SuperAdmin, InstitutionAdmin (assigned institutions) | Update department. |
+| DELETE | `/api/admin/content/departments/{department_id}` | SuperAdmin, InstitutionAdmin (assigned institutions) | Delete department. |
 
 ### Content — Courses
 
 | Method | Path | Role | Description |
 |--------|------|------|-------------|
-| POST | `/api/admin/content/courses` | SuperAdmin | Create course. Body: `course_name`, `description?`, `department_id?`. |
-| PUT | `/api/admin/content/courses/{course_id}` | SuperAdmin | Update course. |
-| DELETE | `/api/admin/content/courses/{course_id}` | SuperAdmin | Delete course. |
+| POST | `/api/admin/content/courses` | SuperAdmin, InstitutionAdmin (assigned institutions) | Create course. Body: `course_name`, `description?`, `department_id?`. |
+| PUT | `/api/admin/content/courses/{course_id}` | SuperAdmin, InstitutionAdmin (assigned institutions) | Update course. |
+| DELETE | `/api/admin/content/courses/{course_id}` | SuperAdmin, InstitutionAdmin (assigned institutions) | Delete course. |
 
 ### Content — Subjects
 
 | Method | Path | Role | Description |
 |--------|------|------|-------------|
-| POST | `/api/admin/content/subjects` | SuperAdmin | Create subject. Body: as per schema. |
-| PUT | `/api/admin/content/subjects/{subject_id}` | SuperAdmin | Update subject. |
-| DELETE | `/api/admin/content/subjects/{subject_id}` | SuperAdmin | Delete subject. |
+| POST | `/api/admin/content/subjects` | SuperAdmin, InstitutionAdmin (assigned institutions) | Create subject. Body: as per schema. |
+| PUT | `/api/admin/content/subjects/{subject_id}` | SuperAdmin, InstitutionAdmin (assigned institutions) | Update subject. |
+| DELETE | `/api/admin/content/subjects/{subject_id}` | SuperAdmin, InstitutionAdmin (assigned institutions) | Delete subject. |
 
 ### Content — Syllabi
 
 | Method | Path | Role | Description |
 |--------|------|------|-------------|
-| POST | `/api/admin/content/syllabi` | SuperAdmin | Create syllabus. Body: as per schema. |
-| PUT | `/api/admin/content/syllabi/{syllabus_id}` | SuperAdmin | Update syllabus. |
-| DELETE | `/api/admin/content/syllabi/{syllabus_id}` | SuperAdmin | Delete syllabus. |
+| POST | `/api/admin/content/syllabi` | SuperAdmin, InstitutionAdmin (assigned institutions) | Create syllabus. Body: as per schema. |
+| PUT | `/api/admin/content/syllabi/{syllabus_id}` | SuperAdmin, InstitutionAdmin (assigned institutions) | Update syllabus. |
+| DELETE | `/api/admin/content/syllabi/{syllabus_id}` | SuperAdmin, InstitutionAdmin (assigned institutions) | Delete syllabus. |
 
 ### Content — Topics
 
 | Method | Path | Role | Description |
 |--------|------|------|-------------|
-| POST | `/api/admin/content/topics` | SuperAdmin | Create topic. Body: as per schema. |
-| PUT | `/api/admin/content/topics/{topic_id}` | SuperAdmin | Update topic. |
-| DELETE | `/api/admin/content/topics/{topic_id}` | SuperAdmin | Delete topic. |
+| POST | `/api/admin/content/topics` | SuperAdmin, InstitutionAdmin (assigned institutions) | Create topic. Body: as per schema. |
+| PUT | `/api/admin/content/topics/{topic_id}` | SuperAdmin, InstitutionAdmin (assigned institutions) | Update topic. |
+| DELETE | `/api/admin/content/topics/{topic_id}` | SuperAdmin, InstitutionAdmin (assigned institutions) | Delete topic. |
 
 ### Role assignments
 

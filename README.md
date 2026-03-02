@@ -404,6 +404,9 @@ uv pip install -r requirements.txt
 ```
 
 ### 2. Start Backend Server
+
+**Database:** The default in code is SQLite (`dev.db`). If your `.env` uses PostgreSQL, ensure Postgres is running (e.g. `brew services start postgresql` or Docker). To run without Postgres, set in `.env`: `DATABASE_URL=sqlite+aiosqlite:///./dev.db` and `AUTO_CREATE_DB=false`.
+
 ```bash
 uv run uvicorn app.main:app --reload --port 8000
 ```
@@ -434,6 +437,7 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 
 **Other:**
 
+- **Database** — Default: SQLite (`sqlite+aiosqlite:///./dev.db`). For Postgres, set `DATABASE_URL` and optionally `DATABASE_SUPERUSER_URL` and `AUTO_CREATE_DB=true`. If you see "Connection refused", start Postgres or switch to SQLite (see above).
 - `CHROMA_PERSIST_DIR` — ChromaDB persistence directory (default: `./chroma_data`)
 - `UPLOAD_MAX_SIZE_MB` — Max file size for topic uploads (default: 10)
 
